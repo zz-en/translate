@@ -4,7 +4,7 @@
          xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
     <modelVersion>4.0.0</modelVersion>
 
-    <groupId>com.abcpen.api</groupId>
+    <groupId>com.mytranslate.api</groupId>
     <artifactId>api-test</artifactId>
     <version>1.0-SNAPSHOT</version>
 
@@ -78,7 +78,7 @@
                 <configuration>
                     <archive>
                         <manifest>
-                            <mainClass>com.abcpen.api.test.ApiServerTest</mainClass>
+                            <mainClass>com.mytranslate.api.ApiServerTest</mainClass>
                         </manifest>
                     </archive>
                     <descriptorRefs>

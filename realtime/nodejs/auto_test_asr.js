@@ -96,17 +96,17 @@ function receiveRecognitionResult(ws, printMode) {
 
 async function connectToServer(printMode, asrType) {
     // 从环境变量中读取
-    const appId = process.env.ZMEET_APP_ID;
-    const appSecret = process.env.ZMEET_APP_SECRET;
+    const appId = process.env.TRANSLATE_APP_ID;
+    const appSecret = process.env.TRANSLATE_APP_SECRET;
     
     // 检查环境变量
     if (!appId || !appSecret) {
-        throw new Error('缺少必需的环境变量：ZMEET_APP_ID 或 ZMEET_APP_SECRET 未设置');
+        throw new Error('缺少必需的环境变量：TRANSLATE_APP_ID 或 TRANSLATE_APP_SECRET 未设置');
     }
     
     console.log(`Using appId: ${appId}`);
     
-    const baseUrl = "wss://audio.abcpen.com:8443/asr-realtime/v2/ws";
+    const baseUrl = "wss://your-api-domain.com/asr-realtime/v2/ws";
     
     const { signa, ts } = generateSignature(appId, appSecret);
     const url = `${baseUrl}?appid=${appId}&ts=${ts}&signa=${encodeURIComponent(signa)}&asr_type=${asrType}` +
@@ -146,8 +146,8 @@ program
     .option('--mode <type>', 'Output mode: typewriter or json', 'typewriter')
     .option('--asr_type <type>', 'ASR recognition mode: sentence or word', 'word')
     .option('--voiceprint <boolean>', 'Enable voiceprint recognition', true)
-    .option('--voiceprint_org_id <string>', 'Organization ID for voiceprint', process.env.ZMEET_APP_ID)
-    .option('--voiceprint_tag_id <string>', 'Tag ID for voiceprint', process.env.ZMEET_APP_ID)
+    .option('--voiceprint_org_id <string>', 'Organization ID for voiceprint', process.env.TRANSLATE_APP_ID)
+    .option('--voiceprint_tag_id <string>', 'Tag ID for voiceprint', process.env.TRANSLATE_APP_ID)
     .option('--audio_file <path>', '音频文件路径', path.join(__dirname, "../dataset/asr/test.wav"))
     .parse(process.argv);
 

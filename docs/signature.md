@@ -12,7 +12,7 @@
 客户首先需要与商务沟通，获得X-App-Key和X-App-Secret：
 
 * X-App-Key
-  唯一的用户ID， 举例 "zmeet"；一般俗称为 application id 或 application key.
+  唯一的用户ID， 举例 "your_app"；一般俗称为 application id 或 application key.
 * X-App-Secret
   用户密匙， 举例 "ba9e07dc-1d79-4f7a-ab49-0205d3c0e073", 一般俗称为 application secret.
 
@@ -89,7 +89,7 @@ def get_signature_flytek(ts, app_id, app_secret):
 * Java基础工具类
 
 ```java
-package com.abcpen.ai.rtasr.util;
+package com.mytranslate.util;
 
 import java.io.UnsupportedEncodingException;
 import java.nio.charset.StandardCharsets;

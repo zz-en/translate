@@ -1,4 +1,4 @@
-package com.abcpen.api.test;
+package com.mytranslate.api;
 
 import org.apache.http.impl.client.CloseableHttpClient;
 import org.apache.http.impl.client.HttpClients;
@@ -19,9 +19,10 @@ import java.util.UUID;
 
 public class ApiServerTest {
     private static final Logger logger = LoggerFactory.getLogger(ApiServerTest.class);
-    private static final String BASE_URL = "https://audio.abcpen.com:8443";
-    private static final String APPLICATION_KEY = "test1";
-    private static final String APPLICATION_SECRET = "2258ACC4-199B-4DCB-B6F3-C2485C63E85A";
+    private static final String BASE_URL = "https://your-api-domain.com";
+    // TODO: 替换为你自己的 APPLICATION_KEY 和 APPLICATION_SECRET
+    private static final String APPLICATION_KEY = "your_app_key";
+    private static final String APPLICATION_SECRET = "your_app_secret";
 
     public static void main(String[] args) throws Exception {
         ApiServerTest test = new ApiServerTest();
@@ -29,7 +30,7 @@ public class ApiServerTest {
     }
 
     public void testAsrWorkflow() throws Exception {
-        String audioUrl = "https://zos.abcpen.com/denoise/test/weiya.wav";
+        String audioUrl = "https://your-storage.com/audio/sample.wav";
         String appId = "test_app";
         String taskId = UUID.randomUUID().toString();
         String language = "en";
@@ -86,6 +87,14 @@ public class ApiServerTest {
         return Base64.getEncoder().encodeToString(hmacBytes);
     }
 
+    private String bytesToHex(byte[] bytes) {
+        StringBuilder result = new StringBuilder();
+        for (byte b : bytes) {
+            result.append(String.format("%02x", b));
+        }
+        return result.toString();
+    }
+
     private JSONObject submitTask(String audioUrl, String appId, String taskId, String language) throws Exception {
         try (CloseableHttpClient client = HttpClients.createDefault()) {
             HttpPost post = new HttpPost(BASE_URL + "/asr-offline/submit_task/v1");
@@ -124,7 +133,6 @@ public class ApiServerTest {
             get.setHeader("X-App-Signature", signature);
             get.setHeader("X-Timestamp", timestamp);
 
-            // 发送请求并获取响应
             return new JSONObject(EntityUtils.toString(client.execute(get).getEntity()));
         }
     }
@@ -140,20 +148,7 @@ public class ApiServerTest {
             get.setHeader("X-App-Signature", signature);
             get.setHeader("X-Timestamp", timestamp);
 
-            // 发送请求并获取响应
             return new JSONObject(EntityUtils.toString(client.execute(get).getEntity()));
         }
-    }
-
-    private static String bytesToHex(byte[] bytes) {
-        StringBuilder hexString = new StringBuilder();
-        for (byte b : bytes) {
-            String hex = Integer.toHexString(0xff & b);
-            if (hex.length() == 1) {
-                hexString.append('0');
-            }
-            hexString.append(hex);
-        }
-        return hexString.toString();
     }
 }

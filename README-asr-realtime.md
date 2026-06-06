@@ -30,10 +30,10 @@
 | 内容     | 说明                                                         |
 | :------- | ------------------------------------------------------------ |
 | 请求协议 | wss                                                          |
-| 请求地址 | wss: //asr-prod.abcpen.com/v1/asr/ws?{请求参数} *注：服务器IP不固定，为保证您的接口稳定，请勿通过指定IP的方式调用接口，使用域名方式调用* |
+| 请求地址 | wss://your-api-domain.com/v1/asr/ws?{请求参数} *注：服务器IP不固定，为保证您的接口稳定，请勿通过指定IP的方式调用接口，使用域名方式调用* |
 | 接口鉴权 | 签名机制，详见 [signa生成](#signa生成)                       |
 | 响应格式 | 统一采用JSON格式                                             |
-| 开发语言 | 任意，只要可以向笔声云服务发起WebSocket请求的均可            |
+| 开发语言 | 任意，只要可以向语音云服务发起WebSocket请求的均可            |
 | 音频属性 | 采样率16k、位长16bit、单声道                                 |
 | 音频格式 | pcm                                                          |
 | 数据发送 | 建议音频流每200ms发送6400字节                                |
@@ -49,7 +49,7 @@
 接口地址
 
 ```bash
-wss://asr-prod.abcpen.com/v1/asr/ws?{请求参数}
+wss://your-api-domain.com/v1/asr/ws?{请求参数}
 ```
 
 参数格式
@@ -62,7 +62,7 @@ key1=value1&key2=value2…（key和value都需要进行urlencode）
 
 | 参数              | 类型   | 必须 | 说明                                                         | 示例                                                         |
 | :---------------- | :----- | :--- | :----------------------------------------------------------- | :----------------------------------------------------------- |
-| appid             | string | 是   | 笔声开放平台应用ID                                           | 595f23df                                                     |
+| appid             | string | 是   | 开放平台应用ID                                               | your_app_id                                                  |
 | ts                | string | 是   | 当前时间戳，从1970年1月1日0点0分0秒开始到现在的秒数          | 1512041814                                                   |
 | signa             | string | 是   | 加密数字签名（基于HMACSHA1算法）                             | IrrzsJeOFk1NGfJHW6SkHUoN9CU=                                 |
 | source_lang       | string | 否   | 实时语音转写语种，也就是源语言；不传自动感知                 | 语种类型：中文、中英混合识别：cn；<br/>英文："en" <br/>德文："de" <br/>法语："fr" <br/> 西班牙语："es" <br/>意大利："it" <br/>俄罗斯："ru" <br/> 日语 "ja" <br/>韩国 "ko" <br/>更多语言参考本文附录 |
@@ -144,7 +144,7 @@ def get_signature_flytek(ts, app_id, app_secret):
 * Java基础工具类
 
 ```java
-package com.abcpen.ai.rtasr.util;
+package com.mytranslate.util;
 
 import java.io.UnsupportedEncodingException;
 import java.nio.charset.StandardCharsets;
@@ -235,7 +235,7 @@ public class EncryptUtil {
 ####请求示例
 
 ```text
-	wss://translate.abcpen.com/v1/asr/ws?appid=595f23df&ts=1512041814&signa=IrrzsJeOFk1NGfJHW6SkHUoN9CU=&pd=edu
+	wss://your-api-domain.com/v1/asr/ws?appid=your_app_id&ts=1512041814&signa=IrrzsJeOFk1NGfJHW6SkHUoN9CU=&pd=edu
 ```
 
 
@@ -338,7 +338,7 @@ public class EncryptUtil {
 在调用该业务接口时
 
 - 若关闭IP白名单，接口认为IP不限，不会校验IP。
-- 若打开IP白名单，则服务端会检查调用方IP是否在笔声开放平台配置的IP白名单中，对于没有配置到白名单中的IP发来的请求，服务端会拒绝服务。
+- 若打开IP白名单，则服务端会检查调用方IP是否在开放平台配置的IP白名单中，对于没有配置到白名单中的IP发来的请求，服务端会拒绝服务。
 
 IP白名单规则
 
@@ -492,7 +492,7 @@ IP白名单规则
 ```
 #### 实时语音转写支持什么平台？
 
-> 答：实时转写只支持webapi接口，开放平台“实时语音转写”需要WebSocket接入，针对是有编程基础的开发者用户。如果您是个人用户，不想通过编程方式直接实现语音转写功能，可以去笔声官网，了解语音转写功能的更多详情。
+> 答：实时转写只支持webapi接口，开放平台“实时语音转写”需要WebSocket接入，针对是有编程基础的开发者用户。如果您是个人用户，不想通过编程方式直接实现语音转写功能，可以去官网，了解语音转写功能的更多详情。
 
 #### 实时语音转写支持什么语言？
 

@@ -93,8 +93,8 @@ function receiveRecognitionResult(ws, printMode) {
 }
 
 async function connectToServer(printMode, asrType, recall) {
-    const appId = "test1";
-    const appSecret = "2258ACC4-199B-4DCB-B6F3-C2485C63E85A";
+    const appId = "your_app_id";
+    const appSecret = "your_app_secret";
     const baseUrl = "ws://192.168.2.141:2001/asr-realtime/v2/ws";
     
     const { signa, ts } = generateSignature(appId, appSecret);

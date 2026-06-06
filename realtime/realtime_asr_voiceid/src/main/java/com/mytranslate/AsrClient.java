@@ -1,4 +1,4 @@
-package com.abcpen;
+package com.mytranslate;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import java.io.File;
@@ -135,7 +135,7 @@ public class AsrClient {
             String ts = signatureData[1];
 
             String wsUrl = String.format(
-                    "wss://audio.abcpen.com:8443/asr-realtime/v2/ws?appid=%s&ts=%s&signa=%s" +
+                    "wss://your-api-domain.com/asr-realtime/v2/ws?appid=%s&ts=%s&signa=%s" +
                     "&asr_type=%s&trans_mode=%s&target_lang=%s&pd=%s" +
                     "&voiceprint=%s&voiceprint_org_id=%s&voiceprint_tag_id=%s",
                     appId, ts, signa, asrType, transMode, TARGET_LANG, PD,
@@ -240,11 +240,11 @@ public class AsrClient {
         }
 
         // 从环境变量获取 appId 和 appSecret
-        String defaultAppId = dotenv != null ? dotenv.get("ZMEET_APP_ID") : System.getenv("ZMEET_APP_ID");
-        String defaultAppSecret = dotenv != null ? dotenv.get("ZMEET_APP_SECRET") : System.getenv("ZMEET_APP_SECRET");
+        String defaultAppId = dotenv != null ? dotenv.get("TRANSLATE_APP_ID") : System.getenv("TRANSLATE_APP_ID");
+        String defaultAppSecret = dotenv != null ? dotenv.get("TRANSLATE_APP_SECRET") : System.getenv("TRANSLATE_APP_SECRET");
 
         if (defaultAppId == null || defaultAppSecret == null) {
-            LOGGER.error("Missing required environment variables: ZMEET_APP_ID or ZMEET_APP_SECRET");
+            LOGGER.error("Missing required environment variables: TRANSLATE_APP_ID or TRANSLATE_APP_SECRET");
             System.exit(1);
         }
 
@@ -259,7 +259,7 @@ public class AsrClient {
         }
 
         String mode = args[0];
-        String serverUrl = "https://audio.abcpen.com";
+        String serverUrl = "https://your-api-domain.com";
 
         switch (mode) {
             case "asr":
@@ -308,12 +308,6 @@ public class AsrClient {
                 VoiceIdClient deleteClient = new VoiceIdClient(defaultAppId, defaultAppSecret, serverUrl);
                 deleteClient.deleteAllVoices(defaultAppId, defaultAppId);
                 break;
-
-            default:
-                System.out.println("Unknown mode: " + mode);
-                System.exit(1);
         }
     }
 }
-
-

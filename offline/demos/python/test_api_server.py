@@ -6,10 +6,11 @@ import hmac
 import base64
 
 # FastAPI 服务的 URL
-BASE_URL = "https://audio.abcpen.com:8443"
+BASE_URL = "https://your-api-domain.com"
 
-application_key = "test1"
-application_secret = "2258ACC4-199B-4DCB-B6F3-C2485C63E85A"
+# TODO: 替换为你自己的 application_key 和 application_secret
+application_key = "your_app_key"
+application_secret = "your_app_secret"
 
 # generate new signature for the request (client side)
 def generate_signature(app_id: str, api_key: str) -> str:
@@ -69,7 +70,7 @@ def get_result(task_id):
 
 # 主函数
 def main():
-    audio_url = "https://zos.abcpen.com/denoise/test/weiya.wav"
+    audio_url = "https://your-storage.com/audio/sample.wav"
     app_id = "test_app"
     task_id = str(uuid.uuid4())
     language = "en"

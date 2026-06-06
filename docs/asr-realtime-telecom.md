@@ -29,10 +29,10 @@
 | 内容     | 说明                                                         |
 | :------- | ------------------------------------------------------------ |
 | 请求协议 | wss                                                          |
-| 请求地址 | wss: //asr-pre.abcpen.com:8443/v2/asr/ws?{请求参数} *注：服务器IP不固定，为保证您的接口稳定，请勿通过指定IP的方式调用接口，使用域名方式调用* |
+| 请求地址 | wss://your-api-domain.com/v2/asr/ws?{请求参数} *注：服务器IP不固定，为保证您的接口稳定，请勿通过指定IP的方式调用接口，使用域名方式调用* |
 | 接口鉴权 | 签名机制，详见 [signa生成](#signa生成)                       |
 | 响应格式 | 统一采用JSON格式                                             |
-| 开发语言 | 任意，只要可以向笔声云服务发起WebSocket请求的均可            |
+| 开发语言 | 任意，只要可以向语音云服务发起WebSocket请求的均可            |
 | 音频属性 | 采样率16k、位长16bit、单声道                                 |
 | 音频格式 | pcm                                                          |
 | 数据发送 | 建议音频流每200ms发送6400字节                                |
@@ -48,7 +48,7 @@
 接口地址
 
 ```bash
-wss://asr-pre.abcpen.com:8443/v2/asr/ws?{请求参数}
+wss://your-api-domain.com/v2/asr/ws?{请求参数}
 ```
 
    
@@ -63,12 +63,12 @@ key1=value1&key2=value2…（key和value都需要进行urlencode）
 
 | 参数              | 类型   | 必须 | 说明                                                         | 示例                                                         |
 | :---------------- | :----- | :--- | :----------------------------------------------------------- | :----------------------------------------------------------- |
-| appid             | string | 是   | 笔声开放平台应用ID                                           | 595f23df                                                     |
+| appid             | string | 是   | 开放平台应用ID                                               | your_app_id                                                  |
 | ts                | string | 是   | 当前时间戳，从1970年1月1日0点0分0秒开始到现在的秒数          | 1512041814                                                   |
 | signa             | string | 是   | 加密数字签名（基于HMACSHA1算法）                             | IrrzsJeOFk1NGfJHW6SkHUoN9CU=                                 |
 | trans_mode        | string | 否   | 为“1”，启动同声翻译，这时必须设置目标语言（target_lang); 为“0”， 不启动同声翻译 | 0                                                            |
-| source_lang       | string | 否   | 实时语音转写语种，也就是源语言；不传自动识别                 | 语种类型：中文、中英混合识别：zh；<br/>英文："en" <br/>德文："de" <br/>法语："fr" <br/> 西班牙语："es" <br/>意大利："it" <br/>俄罗斯："ru" <br/> 日语 "ja" <br/>韩国 "ko" <br/> 更多参考[国家编码](https://github.com/zmeet-ai/asr-sdk-v2/blob/main/docs/country_code.md) |
-| target_lang       | string | 否   | 启动实时翻译的时候，设置的目标语言                           | 语种类型：中文、中英混合识别：zh；<br/>英文："en" <br/>德文："de" <br/>法语："fr" <br/> 西班牙语："es" <br/>意大利："it" <br/>俄罗斯："ru" <br/> 日语 "ja" <br/>韩国 "ko" <br/>更多参考 [国家编码](https://github.com/zmeet-ai/asr-sdk-v2/blob/main/docs/country_code.md) |
+| source_lang       | string | 否   | 实时语音转写语种，也就是源语言；不传自动识别                 | 语种类型：中文、中英混合识别：zh；<br/>英文："en" <br/>德文："de" <br/>法语："fr" <br/> 西班牙语："es" <br/>意大利："it" <br/>俄罗斯："ru" <br/> 日语 "ja" <br/>韩国 "ko" <br/> 更多参考[国家编码](./country_code.md) |
+| target_lang       | string | 否   | 启动实时翻译的时候，设置的目标语言                           | 语种类型：中文、中英混合识别：zh；<br/>英文："en" <br/>德文："de" <br/>法语："fr" <br/> 西班牙语："es" <br/>意大利："it" <br/>俄罗斯："ru" <br/> 日语 "ja" <br/>韩国 "ko" <br/>更多参考 [国家编码](./country_code.md) |
 | punc              | string | 否   | 标点过滤控制，默认返回标点，punc=0会过滤结果中的标点         | 1                                                            |
 | speaker_number    | string | 否   | 发音人个数，可选值：0-10，0表示盲分                          | 默认：2（适用通话时两个人对话的场景）                        |
 | scene             | string | 否   | 垂直领域个性化参数: <br/>法院: court <br/>教育: edu <br/>金融: finance <br/>医疗: medical <br/>科技: tech <br/>运营商: isp <br/>政府: gov <br/>电商: ecom <br/>军事: mil <br/>企业: com <br/>生活: life <br/>汽车: car | 设置示例：scene="edu" 参数scene为非必须设置，不设置参数默认为通用 |
@@ -103,14 +103,14 @@ key1=value1&key2=value2…（key和value都需要进行urlencode）
 
 ### signa生成
 ### 针对天翼云（理想），我们采用了不同的验证模式
-#### 天翼云和笔声之间的交互
-* 天翼云采用笔声提供的appid, appsecret做正常的验证模式，同时传输cust_app_id这个字段。其中cust_app_id表示天翼云下面的终端客户，或者说是直接客户(如“xiamen_telecom”)
-* 验证通过后，笔声回传token给天翼云
+#### 天翼云和服务端之间的交互
+* 天翼云采用服务端提供的appid, appsecret做正常的验证模式，同时传输cust_app_id这个字段。其中cust_app_id表示天翼云下面的终端客户，或者说是直接客户(如"xiamen_telecom")
+* 验证通过后，服务端回传token给天翼云
 * 天翼云将token回传给终端客户
-#### 天翼云终端客户和笔声之间的交互
+#### 天翼云终端客户和服务端之间的交互
 * 终端客户，拿着天翼云给他的token，传入两个参数：X-App-Cust-Id 和X-App-Cust-Token，其中X-App-Cust-Id是客户的编码id，如“xiamen_telecom”, X-App-Cust-Token是天翼云回传的token
 
-####  天翼云和笔声之间的验证代码
+####  天翼云和服务端之间的验证代码
 ```
 import java.security.InvalidKeyException;
 import java.security.NoSuchAlgorithmException;
@@ -128,7 +128,7 @@ import okhttp3.Response;
 
 public class Main {
 
-    private static final String API_URL = "http://asr-dev.abcpen.com"; 
+    private static final String API_URL = "http://your-api-domain.com"; 
 
     public static void main(String[] args) {
         try {
@@ -142,7 +142,7 @@ public class Main {
 
     private static void testToken(String apiUrl) throws Exception {
         String appId = "test1";
-        String appSecret = "2258ACC4-199B-4DCB-B6F3-C2485C63E85A";
+        String appSecret = "your_app_secret";
         String[] signatureAndTimestamp = generateSignature(appId, appSecret);
         String signature = signatureAndTimestamp[0];
         String timestamp = signatureAndTimestamp[1];
@@ -288,7 +288,7 @@ public class Main {
 在调用该业务接口时
 
 - 若关闭IP白名单，接口认为IP不限，不会校验IP。
-- 若打开IP白名单，则服务端会检查调用方IP是否在笔声开放平台配置的IP白名单中，对于没有配置到白名单中的IP发来的请求，服务端会拒绝服务。
+- 若打开IP白名单，则服务端会检查调用方IP是否在开放平台配置的IP白名单中，对于没有配置到白名单中的IP发来的请求，服务端会拒绝服务。
 
 IP白名单规则
 
@@ -331,7 +331,7 @@ IP白名单规则
 
 #### 实时语音转写支持什么平台？
 
-> 答：实时转写只支持webapi接口，开放平台“实时语音转写”需要WebSocket接入，针对是有编程基础的开发者用户。如果您是个人用户，不想通过编程方式直接实现语音转写功能，可以去笔声官网，了解语音转写功能的更多详情。
+> 答：实时转写只支持webapi接口，开放平台“实时语音转写”需要WebSocket接入，针对是有编程基础的开发者用户。如果您是个人用户，不想通过编程方式直接实现语音转写功能，可以去官网，了解语音转写功能的更多详情。
 
 #### 实时语音转写支持什么语言？
 

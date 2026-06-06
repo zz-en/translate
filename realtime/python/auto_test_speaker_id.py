@@ -26,7 +26,7 @@ sys.path.append(os.path.join(os.path.dirname(__file__), "../dataset/voiceid"))
 # for test env
 # URL_SERVER = "http://192.168.2.141:3700"
 # for production env
-URL_SERVER = "https://voiceid.abcpen.com:8443"
+URL_SERVER = "https://your-api-domain.com"
 
 def update_logger():
     log_file = os.getenv("LOG_FILE", "/data/logs/voiceid/voiceid.log")
@@ -52,14 +52,14 @@ def update_logger():
 @dataclass
 class VoiceIDConfig:
     """声纹配置类"""
-    url_server: str = "https://voiceid.abcpen.com:8443"
-    app_key: str = os.getenv("ZMEET_APP_ID")
-    app_secret: str = os.getenv("ZMEET_APP_SECRET")
+    url_server: str = "https://your-api-domain.com"
+    app_key: str = os.getenv("TRANSLATE_APP_ID")
+    app_secret: str = os.getenv("TRANSLATE_APP_SECRET")
     
     def __post_init__(self):
         # 检查必需的环境变量
         if not self.app_key or not self.app_secret:
-            raise ValueError("缺少必需的环境变量：ZMEET_APP_ID 或 ZMEET_APP_SECRET 未设置")
+            raise ValueError("缺少必需的环境变量：TRANSLATE_APP_ID 或 TRANSLATE_APP_SECRET 未设置")
             
         logger.info(f"app_key: {self.app_key}, app_secret: {self.app_secret}")
         

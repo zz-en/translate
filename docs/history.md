@@ -35,4 +35,4 @@
 * audio_separate_asr: 语音识别+说话人区分
 * audio_separate_asr_sd: 语音识别+说话人区分+人声分离
 * audio_separate_asr_sd_id: 语音识别+说话人区分+说话人识别+人声分离
-具体变动参考 <a>https://github.com/zmeet-ai/asr-sdk-v2/blob/main/docs/asr-offline.md</a>
+具体变动参考 <a>./asr-offline.md</a>

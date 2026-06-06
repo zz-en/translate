@@ -1,6 +1,6 @@
 ## 录音文件识别请求
 
-### zmeet语音识别优势
+### 语音识别优势
 
 - **业界领先的声纹识别，返回结果字段中精准识别说话人ID**
 - **优秀的人声分离算法，可从人的对话从嘈杂的背景噪音中分离出清晰的人声对话**
@@ -20,31 +20,31 @@
 ### 1. 接口描述
 
 接口请求域名： 
-- 创建任务：https://asr-pre.abcpen.com:8443/asr-rec/v2/long/create
-- 查询任务：https://asr-pre.abcpen.com:8443/asr-rec/v2/long/query
+- 创建任务：https://your-api-domain.com/asr-rec/v2/long/create
+- 查询任务：https://your-api-domain.com/asr-rec/v2/long/query
 - 本接口可对较长的录音文件进行识别。
 - 接口默认限频：20次/秒。此处仅限制任务提交频次，与识别结果返回时效无关
 - 返回时效：异步回调，非实时返回。最长3小时返回识别结果，**大多数情况下，1小时的音频1-3分钟即可完成识别**。请注意：上述返回时长不含音频下载时延，且30分钟内发送超过1000小时录音或2万条任务的情况除外
 - 媒体文件格式：**支持几乎所有音视频文件格式**，如mp4, avi, mkv, mov, wmv, flv, webm, mpeg, mpg, h264, hevc, wav、mp3、m4a、flv、mp4、wma、3gp、amr、aac、ogg-opus、flac
-- 支持语言：[支持100种国家语言](https://github.com/zmeet-ai/asr-sdk-v2/blob/main/docs/country_code.md)
+- 支持语言：[支持100种国家语言](./country_code.md)
 -  音频提交方式：本接口支持**音频 URL**。推荐使用[阿里云对象存储OSS](https://www.aliyun.com/product/oss?spm=5176.28508143.J_4VYgf18xNlTAyFFbOuOQe.60.e939154aMOdAFn) 、[亚马逊S3](about:blank)和 [腾讯云COS](https://cloud.tencent.com/document/product/436/38484) 等对象存储来存储、生成URL并提交任务，存储桶权限需要设置公有读私有写，或URL设置外部可访问
 -  音频限制：音频 URL 时长不能大于5小时，文件大小不超过1GB；本地音频文件不能大于5MB
 -  如何获取识别结果：支持**回调或轮询**的方式获取结果，具体请参考 [录音文件识别结果查询](https://cloud.tencent.com/document/product/1093/37822)
 -  识别结果有效时间：在服务端保存7天
--  签名方法参考 [公共参数](https://github.com/zmeet-ai/asr-sdk-v2/blob/main/docs/signature.md) 中签名方法
+-  签名方法参考 [公共参数](./signature.md) 中签名方法
 
 默认接口请求频率限制：20次/秒。
 
 * 备注-下面2个接口是目前版本的加速版本
     * 接口请求域名： 
-    - 创建任务：https://asr-pre.abcpen.com:8443/asr-rec/v1/long/create
+    - 创建任务：https://your-api-domain.com/asr-rec/v1/long/create
     	- 接口说明
             - 必传参数： 验证信息和v2接口相似
             - 必传参数：audio_url, 音频文件的url
             - 采用mutpart form提交数据
             - 返回task_id, 用作下个接口的查询任务结果 
     
-    - 查询任务：https://asr-pre.abcpen.com:8443/asr-rec/v1/long/query
+    - 查询任务：https://your-api-domain.com/asr-rec/v1/long/query
     	- 接口说明
             - 必传参数： 验证信息和v2接口相似
             - 必传参数：task_id (创建任务的返回结果)
@@ -58,7 +58,7 @@
 
 ### 2. 输入参数
 
-以下请求参数列表仅列出了接口请求参数，完整公共参数列表见 [公共请求参数](https://github.com/zmeet-ai/asr-sdk-v2/blob/main/docs/signature.md)。
+以下请求参数列表仅列出了接口请求参数，完整公共参数列表见 [公共请求参数](./signature.md)。
 
 | 参数名称           | 必选 | 类型    | 描述                                                         | 默认值 |
 | :----------------- | :--- | :------ | :----------------------------------------------------------- | ------ |
@@ -101,7 +101,7 @@ headers = {
 }
 json = {
     "sd": "true",
-    "input_audio_url": "https://zos.abcpen.com/tts/zmeet/20221023/b6a2c7ac-52c8-11ed-961e-00155dc6cbed.mp3",
+    "input_audio_url": "https://your-storage.com/audio/sample.mp3",
     "language": "zh"
 }
 response = requests.post(url_create, headers=headers, data=json)

@@ -95,13 +95,13 @@ def generate_signature(app_id: str, api_key: str) -> str:
     return signa, ts
 
 async def connect_to_server(print_mode: str, asr_type: str, audio_file: str):
-    app_id = os.getenv("ZMEET_APP_ID")
-    app_secret = os.getenv("ZMEET_APP_SECRET")
+    app_id = os.getenv("TRANSLATE_APP_ID")
+    app_secret = os.getenv("TRANSLATE_APP_SECRET")
     
     if not app_id or not app_secret:
-        raise ValueError("缺少必需的环境变量：ZMEET_APP_ID 或 ZMEET_APP_SECRET 未设置")
+        raise ValueError("缺少必需的环境变量：TRANSLATE_APP_ID 或 TRANSLATE_APP_SECRET 未设置")
     
-    base_url = "wss://audio.abcpen.com:8443/asr-realtime/v2/ws"
+    base_url = "wss://your-api-domain.com/asr-realtime/v2/ws"
     signa, ts = generate_signature(app_id, app_secret)
     
     # 更新 URL，添加声纹识别参数
@@ -158,8 +158,7 @@ if __name__ == "__main__":
     args = parser.parse_args()
     
     # 如果未指定 org_id 和 tag_id，使用 app_id
-    app_id = os.getenv("ZMEET_APP_ID")
-    if args.voiceprint_org_id is None:
+    app_id = os.getenv("TRANSLATE_APP_ID")
         args.voiceprint_org_id = app_id
     if args.voiceprint_tag_id is None:
         args.voiceprint_tag_id = app_id

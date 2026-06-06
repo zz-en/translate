@@ -2,7 +2,7 @@
 
 ## 基础信息
 
-- 基础URL: [`https://audio.abcpen.com:8443`](https://audio.abcpen.com:8443)
+- 基础URL: [`https://your-api-domain.com`](https://your-api-domain.com)
 - 所有请求需要包含以下认证头:
   ```
   X-App-Key: <application_key>
