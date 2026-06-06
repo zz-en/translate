@@ -1,0 +1,476 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>AI 同声传译助手</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <!-- ================================================================== -->
+  <!-- Header Bar                                                          -->
+  <!-- ================================================================== -->
+  <header id="header">
+    <div class="brand">
+      <span class="logo">🎙️</span>
+      <h1>AI 同声传译助手</h1>
+    </div>
+    <div class="status-bar">
+      <span id="connectionStatus" class="badge disconnected">● 未连接</span>
+      <span id="sessionId" class="session-id"></span>
+      <span id="themeToggle" class="header-btn" title="切换明暗主题">🌙</span>
+    </div>
+  </header>
+
+  <!-- ================================================================== -->
+  <!-- Main Area                                                           -->
+  <!-- ================================================================== -->
+  <main id="main">
+    <!-- ===== Navigation Sidebar ===== -->
+    <aside id="sidePanel">
+      <button class="nav-item active" data-module="home">
+        <span class="nav-icon">🏠</span>
+        <span>功能导航</span>
+      </button>
+      <div class="nav-divider"></div>
+      <button class="nav-item" data-module="interp">
+        <span class="nav-icon">🎙</span>
+        <span>同声传译</span>
+      </button>
+      <button class="nav-item" data-module="upload">
+        <span class="nav-icon">📁</span>
+        <span>音频上传</span>
+      </button>
+      <button class="nav-item" data-module="subtitle">
+        <span class="nav-icon">🔤</span>
+        <span>全屏字幕</span>
+      </button>
+      <button class="nav-item" data-module="desktop">
+        <span class="nav-icon">🖥️</span>
+        <span>桌面字幕</span>
+      </button>
+      <button class="nav-item" data-module="history">
+        <span class="nav-icon">📜</span>
+        <span>历史导出</span>
+      </button>
+      <button class="nav-home-btn" id="goHomeBtn">
+        ← 返回首页
+      </button>
+    </aside>
+
+    <!-- ===== Content Area ===== -->
+    <div class="content-area">
+
+      <!-- ---- Nav Home (landing page) ---- -->
+      <div class="nav-home" id="navHome">
+        <div class="nav-home-title">
+          <h2>AI 同声传译助手</h2>
+          <p>选择功能模块开始使用</p>
+        </div>
+        <div class="nav-cards">
+          <div class="nav-card" data-navigate="interp">
+            <span class="card-icon">🎙</span>
+            <span class="card-title">同声传译</span>
+            <span class="card-desc">实时语音识别与翻译</span>
+            <span class="card-arrow">→</span>
+          </div>
+          <div class="nav-card" data-navigate="upload">
+            <span class="card-icon">📁</span>
+            <span class="card-title">音频上传翻译</span>
+            <span class="card-desc">上传本地音频文件翻译</span>
+            <span class="card-arrow">→</span>
+          </div>
+          <div class="nav-card" data-navigate="subtitle">
+            <span class="card-icon">🔤</span>
+            <span class="card-title">全屏字幕</span>
+            <span class="card-desc">大字双语字幕展示</span>
+            <span class="card-arrow">→</span>
+          </div>
+          <div class="nav-card" data-navigate="desktop">
+            <span class="card-icon">🖥️</span>
+            <span class="card-title">桌面字幕</span>
+            <span class="card-desc">悬浮窗识别视频/系统音频</span>
+            <span class="card-arrow">→</span>
+          </div>
+          <div class="nav-card" data-navigate="history">
+            <span class="card-icon">📜</span>
+            <span class="card-title">历史导出</span>
+            <span class="card-desc">搜索导出转录记录</span>
+            <span class="card-arrow">→</span>
+          </div>
+        </div>
+      </div>
+
+      <!-- ---- Module: 同声传译 ---- -->
+      <div class="module-page has-settings" id="module-interp">
+        <button class="back-home" data-navigate="home"><span class="arrow">←</span> 返回首页</button>
+        <div class="module-content">
+          <!-- History panel -->
+          <section id="historyPanel">
+            <div class="panel-header">
+              <div class="search-row">
+                <h2>📝 转录记录</h2>
+                <input type="text" id="searchInput" placeholder="搜索原文或译文..." class="search-input">
+                <button id="clearHistory" class="btn-sm" title="清空记录">清空</button>
+              </div>
+            </div>
+            <div id="historyList" class="history-list">
+              <div class="empty-state">
+                <div class="empty-icon">🎤</div>
+                <p>点击下方麦克风按钮开始</p>
+                <p class="sub">系统将实时识别语音并翻译成中文</p>
+              </div>
+            </div>
+          </section>
+
+          <!-- Live Subtitle Overlay -->
+          <section id="subtitleOverlay">
+            <div id="subtitleContainer">
+              <div class="subtitle-row original">
+                <span class="subtitle-label">🎧 原文</span>
+                <span id="subtitleOriginal" class="subtitle-text"></span>
+              </div>
+              <div class="subtitle-row translation">
+                <span class="subtitle-label">🈶 译文</span>
+                <span id="subtitleTranslation" class="subtitle-text"></span>
+              </div>
+              <div id="correctionHint" class="correction-hint hidden">
+                <span class="correction-badge">✏️ 已自动纠正</span>
+              </div>
+            </div>
+          </section>
+
+          <!-- Control Bar -->
+          <footer id="controlBar">
+            <button id="micButton" class="mic-btn" title="开始/停止录音">
+              <span class="mic-icon">🎤</span>
+              <span class="mic-text">开始录音</span>
+            </button>
+            <div id="audioMeter" class="audio-meter">
+              <div class="meter-bar" id="meterBar"></div>
+            </div>
+            <button id="uploadButton" class="btn-secondary" title="上传音频文件">
+              📁 上传音频
+            </button>
+            <input type="file" id="fileInput" accept="audio/*,.wav" hidden>
+          </footer>
+        </div>
+
+        <!-- Settings Panel -->
+        <aside class="module-settings-panel">
+          <section class="card">
+            <h3>⚙️ 设置</h3>
+            <div class="form-group">
+              <label>源语言 / 目标语言</label>
+              <div class="lang-row">
+                <select id="sourceLang" class="select-sm">
+                  <option value="zh">中文</option>
+                  <option value="en" selected>英语</option>
+                  <option value="ja">日语</option>
+                  <option value="ko">韩语</option>
+                  <option value="fr">法语</option>
+                  <option value="de">德语</option>
+                  <option value="es">西班牙语</option>
+                  <option value="ru">俄语</option>
+                  <option value="auto">自动检测</option>
+                </select>
+                <span class="arrow">→</span>
+                <select id="targetLang" class="select-sm">
+                  <option value="zh" selected>中文</option>
+                  <option value="en">英语</option>
+                  <option value="ja">日语</option>
+                  <option value="ko">韩语</option>
+                </select>
+              </div>
+            </div>
+            <div class="form-group">
+              <label>识别场景</label>
+              <select id="scene" class="select-full">
+                <option value="">通用</option>
+                <option value="edu" selected>教育</option>
+                <option value="tech">科技</option>
+                <option value="finance">金融</option>
+                <option value="medical">医疗</option>
+                <option value="court">法院</option>
+                <option value="gov">政府</option>
+                <option value="com">企业</option>
+              </select>
+            </div>
+            <div class="form-group">
+              <label class="toggle-label">
+                <input type="checkbox" id="translateToggle" checked>
+                <span>启用同声传译</span>
+              </label>
+            </div>
+            <div class="form-group">
+              <label class="toggle-label">
+                <input type="checkbox" id="ttsToggle">
+                <span>语音播报翻译结果</span>
+              </label>
+            </div>
+            <div class="form-group">
+              <p class="hint" style="margin:0;color:#10b981;">✅ 翻译引擎：Google Translate（免费，多语言）</p>
+            </div>
+            <div class="form-group">
+              <label>字体大小: <span id="fontSizeValue">14</span>px</label>
+              <input type="range" id="fontSizeSlider" min="10" max="28" value="14" class="font-slider">
+            </div>
+          </section>
+          <section class="card">
+            <h3>📊 统计</h3>
+            <div class="stats-grid">
+              <div class="stat">
+                <span class="stat-value" id="statSentences">0</span>
+                <span class="stat-label">已识别语句</span>
+              </div>
+              <div class="stat">
+                <span class="stat-value" id="statCorrections">0</span>
+                <span class="stat-label">自动纠正</span>
+              </div>
+              <div class="stat">
+                <span class="stat-value" id="statDuration">00:00</span>
+                <span class="stat-label">录制时长</span>
+              </div>
+            </div>
+          </section>
+        </aside>
+      </div>
+
+      <!-- ---- Module: 音频上传 ---- -->
+      <div class="module-page has-settings" id="module-upload">
+        <button class="back-home" data-navigate="home"><span class="arrow">←</span> 返回首页</button>
+        <div class="module-content">
+          <div class="upload-zone">
+            <div class="upload-area" id="uploadArea">
+              <span class="upload-icon">📂</span>
+              <span class="upload-title">点击选择音频文件</span>
+              <span class="upload-sub">支持 WAV, MP3, M4A, OGG 等常见格式</span>
+              <input type="file" id="fileInputUpload" accept="audio/*,.wav" hidden>
+            </div>
+            <div class="upload-progress" id="uploadProgress">
+              <div class="progress-bar-bg">
+                <div class="progress-bar-fill" id="progressBarFill"></div>
+              </div>
+              <span class="progress-text" id="progressText">处理中...</span>
+            </div>
+            <div class="empty-state" id="uploadStatus" style="display:none; height: auto; padding: 20px;">
+              <div class="empty-icon" id="uploadStatusIcon"></div>
+              <p id="uploadStatusText"></p>
+            </div>
+          </div>
+        </div>
+        <aside class="module-settings-panel">
+          <section class="card">
+            <h3>⚙️ 设置</h3>
+            <div class="form-group">
+              <label>源语言 / 目标语言</label>
+              <div class="lang-row">
+                <select id="sourceLangUpload" class="select-sm">
+                  <option value="zh">中文</option>
+                  <option value="en" selected>英语</option>
+                  <option value="ja">日语</option>
+                  <option value="ko">韩语</option>
+                  <option value="fr">法语</option>
+                  <option value="de">德语</option>
+                  <option value="es">西班牙语</option>
+                  <option value="ru">俄语</option>
+                  <option value="auto">自动检测</option>
+                </select>
+                <span class="arrow">→</span>
+                <select id="targetLangUpload" class="select-sm">
+                  <option value="zh" selected>中文</option>
+                  <option value="en">英语</option>
+                  <option value="ja">日语</option>
+                  <option value="ko">韩语</option>
+                </select>
+              </div>
+            </div>
+            <div class="form-group">
+              <label>识别场景</label>
+              <select id="sceneUpload" class="select-full">
+                <option value="">通用</option>
+                <option value="edu" selected>教育</option>
+                <option value="tech">科技</option>
+                <option value="finance">金融</option>
+                <option value="medical">医疗</option>
+                <option value="court">法院</option>
+                <option value="gov">政府</option>
+                <option value="com">企业</option>
+              </select>
+            </div>
+            <div class="form-group">
+              <label class="toggle-label">
+                <input type="checkbox" id="translateToggleUpload" checked>
+                <span>启用翻译</span>
+              </label>
+            </div>
+            <div class="form-group">
+              <label class="toggle-label">
+                <input type="checkbox" id="ttsToggleUpload">
+                <span>语音播报</span>
+              </label>
+            </div>
+          </section>
+        </aside>
+      </div>
+
+      <!-- ---- Module: 全屏字幕 ---- -->
+      <div class="module-page" id="module-subtitle">
+        <button class="back-home" data-navigate="home"><span class="arrow">←</span> 返回首页</button>
+        <div class="module-content">
+          <div class="subtitle-only-display" id="subtitleOnlyDisplay">
+            <div class="subtitle-row original">
+              <span class="subtitle-label">🎧 原文</span>
+              <span id="subtitleBigOriginal" class="subtitle-text"></span>
+            </div>
+            <div class="subtitle-row translation">
+              <span class="subtitle-label">🈶 译文</span>
+              <span id="subtitleBigTranslation" class="subtitle-text"></span>
+            </div>
+            <div id="correctionHintBig" class="correction-hint hidden">
+              <span class="correction-badge">✏️ 已自动纠正</span>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- ---- Module: 桌面字幕 ---- -->
+      <div class="module-page has-settings" id="module-desktop">
+        <button class="back-home" data-navigate="home"><span class="arrow">←</span> 返回首页</button>
+        <div class="module-content">
+          <div class="desktop-start-zone">
+            <div class="desktop-start-icon">🖥️</div>
+            <h2>桌面悬浮字幕</h2>
+            <p class="desktop-desc">将语音识别和翻译结果显示为可拖拽的悬浮窗<br>浮在所有窗口上方，适合观看视频或在线会议</p>
+            <div class="desktop-mode-row">
+              <button id="desktopStartBtnMic" class="desktop-start-btn primary" title="使用麦克风识别语音">
+                <span class="desktop-btn-icon">🎤</span>
+                <span>麦克风识别</span>
+              </button>
+              <button id="desktopStartBtnSystem" class="desktop-start-btn secondary" title="捕获系统音频（浏览器标签页、视频播放等）">
+                <span class="desktop-btn-icon">🔊</span>
+                <span>系统音频</span>
+              </button>
+            </div>
+            <div id="desktopStatus" class="desktop-status hidden"></div>
+            <button id="desktopStopBtn" class="desktop-stop-btn hidden">
+              <span>⏹</span> 停止字幕
+            </button>
+          </div>
+        </div>
+        <aside class="module-settings-panel">
+          <section class="card">
+            <h3>⚙️ 字幕设置</h3>
+            <div class="form-group">
+              <label>音频输入设备</label>
+              <select id="audioDeviceDesktop" class="select-full">
+                <option value="default">🎤 默认麦克风</option>
+                <option value="display">🖥️ 屏幕共享音频（需选Chrome标签页+分享音频）</option>
+              </select>
+              <p class="hint" style="margin-top:4px;" id="audioDeviceHint">使用默认麦克风：环境声音+扬声器回环。如需纯净系统音频，请在Windows声音设置中启用"立体声混音"</p>
+            </div>
+            <div class="form-group">
+              <label>源语言 / 目标语言</label>
+              <div class="lang-row">
+                <select id="sourceLangDesktop" class="select-sm">
+                  <option value="zh">中文</option>
+                  <option value="en" selected>英语</option>
+                  <option value="ja">日语</option>
+                  <option value="ko">韩语</option>
+                  <option value="fr">法语</option>
+                  <option value="de">德语</option>
+                  <option value="es">西班牙语</option>
+                  <option value="ru">俄语</option>
+                  <option value="auto">自动检测</option>
+                </select>
+                <span class="arrow">→</span>
+                <select id="targetLangDesktop" class="select-sm">
+                  <option value="zh" selected>中文</option>
+                  <option value="en">英语</option>
+                  <option value="ja">日语</option>
+                  <option value="ko">韩语</option>
+                </select>
+              </div>
+            </div>
+            <div class="form-group">
+              <label class="toggle-label">
+                <input type="checkbox" id="translateToggleDesktop" checked>
+                <span>启用翻译</span>
+              </label>
+            </div>
+            <div class="form-group">
+              <label>背景透明度: <span id="opacityValueDesktop">0</span>%（0=纯字幕）</label>
+              <input type="range" id="opacitySliderDesktop" min="0" max="100" value="0" class="font-slider">
+            </div>
+            <div class="form-group">
+              <button id="pureSubtitleBtn" class="btn-secondary" style="width:100%;font-size:12px;padding:8px 12px;">
+                ✨ 纯字幕模式（仅显示文字，无窗口背景）
+              </button>
+            </div>
+          </section>
+          <section class="card">
+            <h3>💡 提示</h3>
+            <p class="hint" style="margin:0;color:var(--text-secondary);line-height:1.6;">
+              麦克风模式：直接对着麦克风说话即可<br><br>
+              系统音频模式：选择浏览器标签页，系统音频通过扬声器播放后被麦克风拾取识别。建议将音量调至适中，环境安静效果最佳<br><br>
+              悬浮窗支持拖拽移动，始终置顶显示
+            </p>
+          </section>
+        </aside>
+      </div>
+
+      <!-- ---- Module: 历史导出 ---- -->
+      <div class="module-page" id="module-history">
+        <button class="back-home" data-navigate="home"><span class="arrow">←</span> 返回首页</button>
+        <div class="module-content" style="flex-direction: column;">
+          <div class="history-module-content">
+            <div class="history-module-header">
+              <div class="left-section">
+                <h2 style="font-size: 16px; font-weight: 600; color: var(--text-secondary);">📝 转录记录</h2>
+                <input type="text" id="searchInputHistory" placeholder="搜索原文或译文..." class="search-input">
+                <button id="clearHistoryHist" class="btn-sm" title="清空记录">清空</button>
+              </div>
+              <div class="right-section">
+                <label style="font-size: 12px; color: var(--text-secondary);">格式:</label>
+                <select id="exportFormat" class="select-sm">
+                  <option value="srt">SRT</option>
+                  <option value="txt">TXT</option>
+                  <option value="html">HTML</option>
+                </select>
+                <button id="exportButton" class="btn-sm">导出</button>
+                <label style="font-size: 12px; color: var(--text-secondary);">字号:</label>
+                <input type="range" id="fontSizeSliderHist" min="10" max="28" value="14" class="font-slider" style="width: 80px;">
+                <span id="fontSizeValueHist" style="font-size: 12px; color: var(--text-secondary);">14</span>
+              </div>
+            </div>
+            <div id="historyListHist" class="history-module-list">
+              <div class="empty-state">
+                <div class="empty-icon">🎤</div>
+                <p>尚无记录</p>
+                <p class="sub">进入同声传译模块录音后将显示在此</p>
+              </div>
+            </div>
+            <div class="history-module-stats">
+              <div class="stat-inline">
+                <span class="stat-value" id="statSentencesHist">0</span>
+                <span class="stat-label">已识别语句</span>
+              </div>
+              <div class="stat-inline">
+                <span class="stat-value" id="statCorrectionsHist">0</span>
+                <span class="stat-label">自动纠正</span>
+              </div>
+              <div class="stat-inline">
+                <span class="stat-value" id="statDurationHist">00:00</span>
+                <span class="stat-label">录制时长</span>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+    </div> <!-- /content-area -->
+  </main>
+
+  <script src="app.js"></script>
+</body>
+</html>

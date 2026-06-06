@@ -1,0 +1,24 @@
+{
+  "name": "ai-simultaneous-interpretation-assistant",
+  "version": "1.0.0",
+  "description": "AI 同声传译助手 — 实时语音识别、同声传译、字幕展示、自动纠错",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node --watch server.js"
+  },
+  "keywords": [
+    "asr",
+    "simultaneous-translation",
+    "speech-recognition",
+    "real-time",
+    "同声传译",
+    "语音识别"
+  ],
+  "dependencies": {
+    "dotenv": "^17.4.2",
+    "express": "^4.21.0",
+    "playwright": "^1.60.0",
+    "ws": "^8.18.0"
+  }
+}

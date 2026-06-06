@@ -1,0 +1,706 @@
+/**
+ * AI Simultaneous Interpretation Assistant — Backend Server
+ *
+ * ASR:       iFlytek rtasr (wss://rtasr.xfyun.cn/v1/ws)
+ * Translate: Optional Claude API (when ANTHROPIC_API_KEY is set)
+ *
+ * Pipeline:  Browser mic (Float32) → server converts to Int16 PCM → iFlytek ASR
+ *            → server translates via Claude (optional) → browser subtitles + TTS
+ */
+
+const dotenv = require('dotenv');
+dotenv.config();
+
+const express = require('express');
+const http = require('http');
+const { WebSocketServer, WebSocket } = require('ws');
+const crypto = require('crypto');
+const path = require('path');
+
+// ---------------------------------------------------------------------------
+// Configuration (from .env)
+// ---------------------------------------------------------------------------
+const PORT = process.env.PORT || 3000;
+const ASR_BASE_URL = process.env.ASR_BASE_URL || 'wss://rtasr.xfyun.cn/v1/asr/ws';
+const APP_ID = process.env.TRANSLATE_APP_ID || '';
+const APP_SECRET = process.env.TRANSLATE_APP_SECRET || '';
+const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY || '';
+
+// Audio constants
+const SAMPLE_RATE = 16000;
+const NUM_CHANNELS = 1;
+const BIT_DEPTH = 16;
+const BYTES_PER_SAMPLE = BIT_DEPTH / 8;
+const CHUNK_DURATION_MS = 200;
+const BYTES_PER_CHUNK = Math.floor(SAMPLE_RATE * BYTES_PER_SAMPLE * NUM_CHANNELS * (CHUNK_DURATION_MS / 1000));
+
+// ---------------------------------------------------------------------------
+// iFlytek signature:  signa = Base64(HmacSHA1(MD5(appid + ts), apiKey))
+// Matches official Node.js SDK exactly (signature.md)
+// ---------------------------------------------------------------------------
+function generateSignature(appId, apiKey) {
+  const ts = Math.floor(Date.now() / 1000).toString();
+  const tt = (appId + ts);
+  const baseString = crypto.createHash('md5').update(tt, 'utf-8').digest('hex');
+  const hmacKey = Buffer.from(apiKey, 'utf-8');
+  const hmac = crypto.createHmac('sha1', hmacKey);
+  const signa = hmac.update(baseString, 'utf-8').digest('binary');
+  const encodedSigna = Buffer.from(signa, 'binary').toString('base64');
+  return { signa: encodedSigna, ts };
+}
+
+// ---------------------------------------------------------------------------
+// Sentence history — rolling buffer for context-aware correction
+// ---------------------------------------------------------------------------
+const MAX_HISTORY = 50;
+
+class SentenceHistory {
+  constructor() {
+    this.sentences = [];
+    this.pending = new Map();
+  }
+
+  upsert(segId, asr, translate, isFinal) {
+    const entry = { seg_id: segId, asr, translate, is_final: isFinal, timestamp: Date.now() };
+    if (!isFinal) {
+      const prev = this.pending.get(segId);
+      this.pending.set(segId, entry);
+      const corrected = prev && prev.asr !== asr;
+      return { entry, corrected: !!corrected, prevAsr: prev ? prev.asr : null, prevTrans: prev ? prev.translate : null };
+    }
+    this.pending.delete(segId);
+    this.sentences.push(entry);
+    if (this.sentences.length > MAX_HISTORY) this.sentences.shift();
+    return { entry, corrected: false, prevAsr: null, prevTrans: null };
+  }
+
+  getContext(n = 10) {
+    return this.sentences.slice(-n).map(s => ({ asr: s.asr, translate: s.translate }));
+  }
+
+  getPending() {
+    return Array.from(this.pending.values()).sort((a, b) => a.seg_id - b.seg_id);
+  }
+
+  getTranscript() {
+    const final = this.sentences.map(s => s.asr).join('');
+    const interim = this.getPending().map(s => s.asr).join('');
+    return final + interim;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Extract ASR text from iFlytek's response
+// Supports both v2 (flat 'asr' field) and v1 (nested cn.st.rt[].ws[].cw[].w)
+// ---------------------------------------------------------------------------
+function extractASRText(dataObj) {
+  // v2 format: flat 'asr' field
+  if (typeof dataObj?.asr === 'string') return dataObj.asr;
+
+  // v1 format: nested structure (fallback)
+  try {
+    const st = dataObj?.cn?.st;
+    if (!st || !st.rt) return '';
+    return st.rt.map(seg => {
+      if (!seg.ws) return '';
+      return seg.ws.map(ws => {
+        if (!ws.cw) return '';
+        return ws.cw.map(cw => cw.w || '').join('');
+      }).join('');
+    }).join('');
+  } catch (_) {
+    return '';
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Translate via MyMemory (free, no API key, works in China)
+// Falls back to Google Translate if MyMemory is unavailable
+// ---------------------------------------------------------------------------
+async function translateText(text, sourceLang, targetLang) {
+  if (!text || !text.trim()) return null;
+
+  const src = sourceLang === 'auto' ? 'en' : (sourceLang || 'en');
+  const target = targetLang || 'zh-CN';
+
+  // Try MyMemory first (accessible in China, free tier: ~1000 words/day)
+  try {
+    const langPair = `${src}|${target}`;
+    const url = `https://api.mymemory.translated.net/get?q=${encodeURIComponent(text)}&langpair=${encodeURIComponent(langPair)}`;
+    const resp = await fetch(url, { signal: AbortSignal.timeout(8000) });
+    if (resp.ok) {
+      const result = await resp.json();
+      if (result.responseData && result.responseData.translatedText) {
+        return result.responseData.translatedText.trim() || null;
+      }
+    }
+  } catch (err) {
+    // MyMemory failed, try Google as fallback
+  }
+
+  // Fallback: Google Translate
+  try {
+    const url = `https://translate.googleapis.com/translate_a/single?client=gtx&sl=${encodeURIComponent(src)}&tl=${encodeURIComponent(target)}&dt=t&q=${encodeURIComponent(text)}`;
+    const resp = await fetch(url, { signal: AbortSignal.timeout(8000) });
+    if (!resp.ok) return null;
+    const result = await resp.json();
+    if (Array.isArray(result) && result[0] && Array.isArray(result[0])) {
+      const translation = result[0]
+        .filter(part => Array.isArray(part) && part[0])
+        .map(part => part[0])
+        .join('');
+      return translation.trim() || null;
+    }
+  } catch (err) {
+    console.error('Translation error:', err.message);
+  }
+  return null;
+}
+
+// ---------------------------------------------------------------------------
+// Express + HTTP server
+// ---------------------------------------------------------------------------
+const app = express();
+app.use(express.json());
+app.use(express.static(path.join(__dirname, 'public')));
+
+app.get('/api/health', (_req, res) => res.json({ status: 'ok', uptime: process.uptime() }));
+
+const sessions = new Map();
+
+app.get('/api/history/:sessionId', (req, res) => {
+  const hist = sessions.get(req.params.sessionId);
+  if (!hist) return res.json({ sentences: [], pending: [] });
+  res.json({ sentences: hist.sentences, pending: hist.getPending() });
+});
+
+// ---------------------------------------------------------------------------
+// Export transcript — SRT / TXT / HTML formats
+// ---------------------------------------------------------------------------
+app.get('/api/export/:sessionId', (req, res) => {
+  const format = req.query.format || 'srt';
+  const hist = sessions.get(req.params.sessionId);
+  if (!hist) return res.status(404).json({ error: 'session not found' });
+
+  const sentences = hist.sentences.filter(s => s.is_final);
+  if (sentences.length === 0) {
+    return res.setHeader('Content-Type', 'text/plain; charset=utf-8')
+      .setHeader('Content-Disposition', 'attachment; filename="transcript_empty.txt"')
+      .send('No transcript data available.');
+  }
+
+  let content, mimeType, ext;
+
+  switch (format) {
+    case 'srt':
+      content = formatSRT(sentences);
+      mimeType = 'text/srt; charset=utf-8';
+      ext = 'srt';
+      break;
+    case 'txt':
+      content = formatTXT(sentences);
+      mimeType = 'text/plain; charset=utf-8';
+      ext = 'txt';
+      break;
+    case 'html':
+      content = formatHTML(sentences);
+      mimeType = 'text/html; charset=utf-8';
+      ext = 'html';
+      break;
+    default:
+      return res.status(400).json({ error: 'invalid format, use srt|txt|html' });
+  }
+
+  const now = new Date().toISOString().slice(0, 10);
+  const filename = `transcript_${req.params.sessionId.slice(0, 8)}_${now}.${ext}`;
+  res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
+  res.setHeader('Content-Type', mimeType);
+  res.send(content);
+});
+
+// ---------------------------------------------------------------------------
+// Export formatter helpers
+// ---------------------------------------------------------------------------
+function formatTimestamp(ms) {
+  const totalSec = ms / 1000;
+  const h = Math.floor(totalSec / 3600).toString().padStart(2, '0');
+  const m = Math.floor((totalSec % 3600) / 60).toString().padStart(2, '0');
+  const s = Math.floor(totalSec % 60).toString().padStart(2, '0');
+  const ms3 = Math.floor(ms % 1000).toString().padStart(3, '0');
+  return `${h}:${m}:${s},${ms3}`;
+}
+
+function formatSRT(sentences) {
+  return sentences.map((entry, i) => {
+    const num = i + 1;
+    const start = formatTimestamp(entry.timestamp);
+    const end = formatTimestamp(entry.timestamp + 3000); // 3s default display
+    return `${num}\n${start} --> ${end}\n${entry.asr}\n${entry.translate || ''}\n`;
+  }).join('\n');
+}
+
+function formatTXT(sentences) {
+  return sentences.map((entry, i) => {
+    const time = new Date(entry.timestamp).toLocaleString('zh-CN');
+    let line = `[${time}] #${i + 1}\n`;
+    line += `  ${entry.asr}\n`;
+    if (entry.translate) line += `  [译文] ${entry.translate}\n`;
+    return line;
+  }).join('');
+}
+
+function escapeStr(str) {
+  if (!str) return '';
+  return str.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+}
+
+function formatHTML(sentences) {
+  const rows = sentences.map((entry, i) => {
+    const time = new Date(entry.timestamp).toLocaleString('zh-CN');
+    const asr = escapeStr(entry.asr);
+    const trans = entry.translate ? escapeStr(entry.translate) : '<span style="color:#999">—</span>';
+    return `<tr><td>${i + 1}</td><td>${time}</td><td>${asr}</td><td>${trans}</td></tr>`;
+  }).join('\n');
+
+  return `<!DOCTYPE html>
+<html lang="zh-CN">
+<head><meta charset="UTF-8"><title>Transcript Export</title>
+<style>
+  body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif;max-width:900px;margin:40px auto;padding:0 20px;color:#333}
+  h1{color:#1a1a2e} table{width:100%;border-collapse:collapse;margin-top:20px}
+  th,td{padding:8px 12px;border:1px solid #ddd;text-align:left}
+  th{background:#f5f5f5} @media print{body{margin:20px}}
+</style></head>
+<body>
+<h1>📝 Transcript Export</h1>
+<p>Generated: ${new Date().toLocaleString('zh-CN')} | Sentences: ${sentences.length}</p>
+<table><tr><th>#</th><th>时间</th><th>原文</th><th>译文</th></tr>
+${rows}</table>
+</body></html>`;
+}
+
+app.post('/api/refine', async (req, res) => {
+  const { sessionId, segId, asr, translate } = req.body;
+  if (!sessionId || !asr) return res.status(400).json({ error: 'missing fields' });
+  const hist = sessions.get(sessionId);
+  if (!hist) return res.status(404).json({ error: 'session not found' });
+  const better = await translateText(asr, 'auto', 'zh-CN');
+  res.json({ seg_id: segId, refinement: better ? { needs_correction: true, corrected_translation: better } : null });
+});
+
+const server = http.createServer(app);
+
+// ---------------------------------------------------------------------------
+// WebSocket server — browser ←→ server ←→ iFlytek rtasr
+// ---------------------------------------------------------------------------
+const wss = new WebSocketServer({ server, path: '/ws' });
+
+wss.on('connection', (browserWs) => {
+  console.log('Browser connected');
+
+  const sessionId = crypto.randomUUID();
+  const history = new SentenceHistory();
+  sessions.set(sessionId, history);
+
+  if (sessions.size > 100) {
+    const oldest = [...sessions.keys()].slice(0, sessions.size - 100);
+    oldest.forEach(k => sessions.delete(k));
+  }
+
+  let asrWs = null;
+  let asrReady = false;
+  let config = {
+    lang: 'en',           // iFlytek: 'cn' = Chinese, 'en' = English
+    targetLang: 'zh-CN',  // Google Translate target language
+    scene: 'edu',         // iFlytek: 'pd' parameter
+    translateEnabled: true,
+  };
+
+  let audioBuffer = Buffer.alloc(0);
+  let pendingSegId = 0;   // Track current seg_id for translation
+
+  // ====================================================================
+  // Connect to iFlytek rtasr (v2 API)
+  // ====================================================================
+  function connectToASR() {
+    if (!APP_ID || !APP_SECRET) {
+      console.error('Missing APP_ID or APP_SECRET — check .env');
+      browserWs.send(JSON.stringify({ type: 'error', code: 'no_credentials', desc: '未配置 API 凭证，请检查 .env 文件' }));
+      return;
+    }
+
+    const { signa, ts } = generateSignature(APP_ID, APP_SECRET);
+    // Auth in BOTH URL params and HTTP headers for maximum compatibility
+    const encodedSigna = encodeURIComponent(signa);
+    // v1: use source_lang (not lang), asr_type=1 (sentence-level), audio_sample_rate=16000
+    const url = `${ASR_BASE_URL}?appid=${APP_ID}&ts=${ts}&signa=${encodedSigna}&source_lang=${config.lang || 'en'}&punc=1&pd=${config.scene || ''}&asr_type=1&audio_sample_rate=16000`;
+
+    console.log(`[iFlytek] Connecting: ${url.replace(signa, '***').replace(encodedSigna, '***')}`);
+    asrWs = new WebSocket(url);
+
+    asrWs.on('open', () => {
+      console.log('[iFlytek] Connected ✓');
+      asrReady = true;
+      asrReconnectAttempts = 0; // reset counter on success
+
+      if (audioBuffer.length > 0) {
+        audioBuffer = sendAudioToASR(audioBuffer);
+      }
+
+      browserWs.send(JSON.stringify({
+        type: 'status', code: 'connected', sessionId, config,
+      }));
+    });
+
+    asrWs.on('message', (data) => {
+      try {
+        const msg = JSON.parse(data.toString());
+
+        // --- v2 result format: has 'type' field ('asr' or 'voiceprint') ---
+        if (msg.type === 'asr' || msg.type === 'voiceprint') {
+          handleV2Result(msg);
+          return;
+        }
+
+        // --- Action-based messages (errors, handshake, v1 results) ---
+        switch (msg.action) {
+          case 'started':
+            console.log('[iFlytek] Handshake confirmed, sid:', msg.sid);
+            break;
+
+          case 'error':
+            console.error('[iFlytek] Error:', JSON.stringify(msg));
+            {
+              const desc = msg.desc || '';
+              if (desc.includes('illegal access') || desc.includes('no appid')) {
+                browserWs.send(JSON.stringify({
+                  type: 'error', code: msg.code,
+                  desc: '讯飞ASR鉴权失败 — 请检查API凭证或使用浏览器语音识别（Chrome/Edge已自动启用）',
+                }));
+              } else {
+                browserWs.send(JSON.stringify({ type: 'error', code: msg.code, desc: msg.desc }));
+              }
+            }
+            break;
+
+          case 'result': {
+            // v1 result format (fallback): data field contains the actual result
+            let dataObj;
+            try {
+              dataObj = typeof msg.data === 'string' ? JSON.parse(msg.data) : msg.data;
+            } catch (_) {
+              dataObj = msg.data;
+            }
+
+            const segId = dataObj?.seg_id ?? pendingSegId;
+            const stType = dataObj?.cn?.st?.type;
+            const isFinal = stType === '0';
+            const asr = extractASRText(dataObj);
+
+            if (!asr) break;
+
+            const { corrected, prevAsr } = history.upsert(segId, asr, '', isFinal);
+
+            browserWs.send(JSON.stringify({
+              type: 'asr',
+              seg_id: segId,
+              asr: asr,
+              translate: '',
+              is_final: isFinal,
+              corrected: corrected,
+              prev_asr: prevAsr,
+              prev_translate: null,
+              sessionId: sessionId,
+            }));
+
+            if (isFinal && asr.trim() && config.translateEnabled) {
+              translateText(asr, config.lang, config.targetLang).then(trans => {
+                if (trans) {
+                  history.upsert(segId, asr, trans, true);
+                  browserWs.send(JSON.stringify({
+                    type: 'translation',
+                    seg_id: segId,
+                    translate: trans,
+                    sessionId: sessionId,
+                  }));
+                }
+              });
+            }
+
+            pendingSegId = Math.max(pendingSegId, segId);
+            break;
+          }
+
+          default:
+            console.log('[iFlytek] Unknown message:', JSON.stringify(msg).slice(0, 200));
+        }
+      } catch (err) {
+        console.error('[iFlytek] Parse error:', err.message);
+      }
+    });
+
+    asrWs.on('error', (err) => {
+      console.error('[iFlytek] WebSocket error:', err.message);
+      browserWs.send(JSON.stringify({ type: 'error', code: 'asr_ws_error', desc: err.message }));
+    });
+
+    asrWs.on('close', (code) => {
+      console.log('[iFlytek] Disconnected, code:', code);
+      asrReady = false;
+      asrReconnectAttempts++;
+      if (asrReconnectAttempts <= 3) {
+        browserWs.send(JSON.stringify({ type: 'status', code: 'asr_disconnected' }));
+        setTimeout(() => {
+          if (browserWs.readyState === WebSocket.OPEN) connectToASR();
+        }, 3000);
+      } else {
+        console.log('[iFlytek] Max reconnect attempts reached — giving up');
+        browserWs.send(JSON.stringify({
+          type: 'error', code: 'asr_unavailable',
+          desc: '讯飞ASR不可用 — 请使用麦克风模式（Chrome/Edge浏览器语音识别）',
+        }));
+      }
+    });
+  }
+
+  // --- v2 result handler ---
+  function handleV2Result(msg) {
+    const segId = msg.seg_id ?? pendingSegId;
+    const isFinal = msg.is_final === true || msg.is_final === 'True' || msg.is_final === 1;
+    const asr = extractASRText(msg);
+    const trans = msg.translate || '';
+
+    if (!asr) return;
+
+    const { corrected, prevAsr } = history.upsert(segId, asr, '', isFinal);
+
+    // Send ASR result to browser
+    browserWs.send(JSON.stringify({
+      type: 'asr',
+      seg_id: segId,
+      asr: asr,
+      translate: trans,
+      is_final: isFinal,
+      corrected: corrected,
+      prev_asr: prevAsr,
+      prev_translate: null,
+      sessionId: sessionId,
+    }));
+
+    // If v2 provided translation, send it too
+    if (trans && isFinal) {
+      history.upsert(segId, asr, trans, true);
+      browserWs.send(JSON.stringify({
+        type: 'translation',
+        seg_id: segId,
+        translate: trans,
+        sessionId: sessionId,
+      }));
+    }
+
+    // Fallback: use Google Translate for final sentences without v2 translation
+    if (isFinal && asr.trim() && !trans && config.translateEnabled) {
+      translateText(asr, config.lang, config.targetLang).then(gtTrans => {
+        if (gtTrans) {
+          history.upsert(segId, asr, gtTrans, true);
+          browserWs.send(JSON.stringify({
+            type: 'translation',
+            seg_id: segId,
+            translate: gtTrans,
+            sessionId: sessionId,
+          }));
+        }
+      });
+    }
+
+    pendingSegId = Math.max(pendingSegId, segId);
+  }
+
+  // --- Send v2 control message (language + scene config) ---
+  function sendV2ControlMessage() {
+    if (!asrWs || asrWs.readyState !== WebSocket.OPEN) return;
+    const ctrlMsg = JSON.stringify({
+      config: {
+        lang: {
+          source_lang: config.lang || 'en',
+          target_lang: config.targetLang || 'zh-CN',
+        },
+      },
+      scene: config.scene || 'edu',
+    });
+    asrWs.send(ctrlMsg);
+    console.log(`[iFlytek] Control sent: lang=${config.lang}→${config.targetLang} scene=${config.scene}`);
+  }
+
+  // ====================================================================
+  // Send Int16 PCM audio chunks to iFlytek
+  // ====================================================================
+  function sendAudioToASR(buffer) {
+    if (!asrWs || asrWs.readyState !== WebSocket.OPEN) return Buffer.alloc(0);
+
+    let offset = 0;
+    while (offset + BYTES_PER_CHUNK <= buffer.length) {
+      asrWs.send(buffer.slice(offset, offset + BYTES_PER_CHUNK));
+      offset += BYTES_PER_CHUNK;
+    }
+    return offset < buffer.length ? buffer.slice(offset) : Buffer.alloc(0);
+  }
+
+  function sendEndMarker() {
+    if (asrWs && asrWs.readyState === WebSocket.OPEN) {
+      asrWs.send(JSON.stringify({ end: true }));
+    }
+  }
+
+  // ====================================================================
+  // Handle browser messages
+  // ====================================================================
+  browserWs.on('message', (data) => {
+    if (Buffer.isBuffer(data) || data instanceof ArrayBuffer) {
+      const buf = Buffer.from(data);
+
+      // If it starts with '{', try to parse as JSON control message
+      if (buf.length > 0 && buf[0] === 0x7B) {
+        try {
+          handleBrowserJson(JSON.parse(buf.toString()));
+        } catch (_) { /* fall through to audio */ }
+        return;
+      }
+
+      // Ensure ASR is connected (lazy connection on first audio)
+      ensureASRConnected();
+
+      // Convert Float32 PCM → Int16 PCM
+      const float32 = new Float32Array(buf.buffer, buf.byteOffset, buf.length / 4);
+      const int16 = new Int16Array(float32.length);
+      for (let i = 0; i < float32.length; i++) {
+        const s = Math.max(-1, Math.min(1, float32[i]));
+        int16[i] = s < 0 ? s * 0x8000 : s * 0x7FFF;
+      }
+
+      audioBuffer = Buffer.concat([audioBuffer, Buffer.from(int16.buffer)]);
+
+      // Cap buffer at 30 seconds of audio to prevent memory leak
+      const MAX_BUFFER = BYTES_PER_CHUNK * 150; // 150 chunks × 200ms = 30s
+      if (audioBuffer.length > MAX_BUFFER) {
+        audioBuffer = audioBuffer.slice(-MAX_BUFFER);
+      }
+
+      if (asrReady && audioBuffer.length >= BYTES_PER_CHUNK) {
+        audioBuffer = sendAudioToASR(audioBuffer);
+      }
+      return;
+    }
+
+    // Text message
+    try {
+      handleBrowserJson(JSON.parse(data.toString()));
+    } catch (err) {
+      console.error('Browser message parse error:', err.message);
+    }
+  });
+
+  function handleBrowserJson(msg) {
+    switch (msg.type) {
+      case 'config': {
+        if (msg.sourceLang) config.lang = msg.sourceLang;
+        if (msg.targetLang) config.targetLang = msg.targetLang;
+        if (msg.translateEnabled !== undefined) config.translateEnabled = msg.translateEnabled;
+        if (msg.scene) config.scene = msg.scene;
+
+        // If iFlytek is connected, send control message to update lang/scene
+        if (asrWs && asrWs.readyState === WebSocket.OPEN) {
+          sendV2ControlMessage();
+        }
+        browserWs.send(JSON.stringify({ type: 'status', code: 'config_updated', config }));
+        break;
+      }
+
+      case 'asr_text': {
+        const text = msg.text || '';
+        const isFinal = msg.is_final === true;
+        if (!text.trim()) break;
+
+        const segId = ++pendingSegId;
+        const { corrected, prevAsr } = history.upsert(segId, text, '', isFinal);
+
+        browserWs.send(JSON.stringify({
+          type: 'asr',
+          seg_id: segId,
+          asr: text,
+          translate: '',
+          is_final: isFinal,
+          corrected: corrected,
+          prev_asr: prevAsr,
+          prev_translate: null,
+          sessionId: sessionId,
+        }));
+
+        if (isFinal && text.trim() && config.translateEnabled) {
+          translateText(text, config.lang, config.targetLang).then(trans => {
+            if (trans) {
+              history.upsert(segId, text, trans, true);
+              browserWs.send(JSON.stringify({
+                type: 'translation',
+                seg_id: segId,
+                translate: trans,
+                sessionId: sessionId,
+              }));
+            }
+          });
+        }
+        break;
+      }
+
+      case 'end':
+        sendEndMarker();
+        break;
+
+      case 'reconnect_asr':
+        if (asrWs) { try { asrWs.close(); } catch (_) { /* ok */ } }
+        audioBuffer = Buffer.alloc(0);
+        asrConnectAttempted = true;
+        connectToASR();
+        break;
+
+      default:
+        console.log('Unknown browser msg:', msg.type);
+    }
+  }
+
+  browserWs.on('close', () => {
+    console.log('Browser disconnected, session:', sessionId.slice(0, 8));
+    sendEndMarker();
+    if (asrWs) { try { asrWs.close(); } catch (_) { /* ok */ } }
+    setTimeout(() => { sessions.delete(sessionId); }, 5 * 60 * 1000);
+  });
+
+  browserWs.on('error', (err) => console.error('Browser WS error:', err.message));
+
+  browserWs.send(JSON.stringify({ type: 'status', code: 'ready', sessionId }));
+
+  // Don't connect to iFlytek immediately — wait for audio data or config.
+  // This avoids showing auth errors on page load before the user interacts.
+  let asrConnectAttempted = false;
+  let asrReconnectAttempts = 0;
+
+  function ensureASRConnected() {
+    if (!asrConnectAttempted) {
+      asrConnectAttempted = true;
+      connectToASR();
+    }
+  }
+});
+
+// ---------------------------------------------------------------------------
+// Start
+// ---------------------------------------------------------------------------
+server.listen(PORT, () => {
+  const hasCreds = APP_ID && APP_ID !== 'your_app_id';
+  console.log(`\n🎙️  AI Simultaneous Interpretation Assistant`);
+  console.log(`   Server:      http://localhost:${PORT}`);
+  console.log(`   WebSocket:   ws://localhost:${PORT}/ws`);
+  console.log(`   ASR:         ✓ Browser Web Speech API (Chrome/Edge, free)`);
+  console.log(`   ASR Fallback:${hasCreds ? ' iFlytek rtasr (file upload)' : ' ✗ not configured'}`);
+  console.log(`   Translation: ✓ MyMemory (free) + Google Translate fallback\n`);
+});
