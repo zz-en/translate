@@ -2954,13 +2954,13 @@ function handleExport() {
 }
 
 // ===========================================================================
-// Theme Toggle — dark / light with localStorage persistence
+// Theme Toggle — light / dark with localStorage persistence
 // ===========================================================================
 function toggleTheme() {
-  const current = document.documentElement.getAttribute('data-theme') || 'dark';
-  const next = current === 'dark' ? 'light' : 'dark';
+  const current = document.documentElement.getAttribute('data-theme') || 'light';
+  const next = current === 'light' ? 'dark' : 'light';
   document.documentElement.setAttribute('data-theme', next);
-  if (dom.themeToggle) dom.themeToggle.textContent = next === 'dark' ? '🌙' : '☀️';
+  if (dom.themeToggle) dom.themeToggle.textContent = next === 'dark' ? '☀️' : '🌙';
   try { localStorage.setItem('theme', next); } catch (_) {}
 }
 
@@ -2969,7 +2969,7 @@ function initTheme() {
     const saved = localStorage.getItem('theme');
     if (saved && dom.themeToggle) {
       document.documentElement.setAttribute('data-theme', saved);
-      dom.themeToggle.textContent = saved === 'dark' ? '🌙' : '☀️';
+      dom.themeToggle.textContent = saved === 'dark' ? '☀️' : '🌙';
     }
   } catch (_) {}
 }
