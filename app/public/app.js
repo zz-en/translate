@@ -2209,19 +2209,14 @@ function streamPCMData(float32Data, fileName, useUploadModuleSettings) {
     return;
   }
 
-  // ---- Create audio buffer and play through speakers ----
+  // ---- Play audio through speakers + capture with mic ----
+  // NOTE: Must take off headphones for this to work — mic needs to hear the speakers.
+
   const audioCtx = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: 16000 });
   const audioBuffer = audioCtx.createBuffer(1, float32Data.length, 16000);
   audioBuffer.getChannelData(0).set(float32Data);
 
-  // ---- Also create a silent MediaStream to keep SpeechRecognition happy ----
-  // SpeechRecognition needs a mic permission context; we provide a dummy stream
-  let dummyStream = null;
-  navigator.mediaDevices.getUserMedia({ audio: true })
-    .then(s => { dummyStream = s; })
-    .catch(() => {});
-
-  // ---- Start speech recognition ----
+  // Start speech recognition
   const rec = new SpeechRecognition();
   rec.continuous = true;
   rec.interimResults = true;
@@ -2246,12 +2241,12 @@ function streamPCMData(float32Data, fileName, useUploadModuleSettings) {
   };
 
   rec.onerror = (e) => {
-    if (e.error === 'no-speech' || e.error === 'aborted') return;
-    console.error('SR error:', e.error);
+    if (e.error !== 'no-speech' && e.error !== 'aborted') console.error('SR error:', e.error);
   };
 
-  // ---- Play audio through speakers ----
-  showToast(`正在识别 (${Math.floor(duration)}秒)... 请保持音量开启`, 'info');
+  rec.start();
+
+  // Play audio through speakers
   const source = audioCtx.createBufferSource();
   source.buffer = audioBuffer;
   const gain = audioCtx.createGain();
@@ -2260,17 +2255,16 @@ function streamPCMData(float32Data, fileName, useUploadModuleSettings) {
   gain.connect(audioCtx.destination);
   source.start(0);
 
-  // ---- State ----
+  // State + progress
   state.isRecording = true;
   state.startTime = Date.now();
   updateMicButton();
   state.durationTimer = setInterval(updateDuration, 1000);
-  rec.start();
 
-  // ---- Progress bar ----
-  const startTime = Date.now();
+  showToast(`正在识别 (${Math.floor(duration)}秒)... 🎧请勿戴耳机`, 'info');
+
   const progressInterval = setInterval(() => {
-    const elapsed = (Date.now() - startTime) / 1000;
+    const elapsed = (Date.now() - state.startTime) / 1000;
     const progress = Math.min(100, Math.round((elapsed / duration) * 100));
     if (useUploadModuleSettings) {
       if (domUpload.progressBarFill) domUpload.progressBarFill.style.width = progress + '%';
@@ -2280,13 +2274,12 @@ function streamPCMData(float32Data, fileName, useUploadModuleSettings) {
     }
   }, 500);
 
-  // ---- Completion ----
+  // Completion
   const totalMs = (duration + 5) * 1000;
   setTimeout(() => {
     clearInterval(progressInterval);
     try { rec.stop(); } catch (_) {}
     try { audioCtx.close(); } catch (_) {}
-    if (dummyStream) dummyStream.getTracks().forEach(t => t.stop());
     state.isRecording = false;
     state.startTime = null;
     clearInterval(state.durationTimer);
@@ -2297,7 +2290,7 @@ function streamPCMData(float32Data, fileName, useUploadModuleSettings) {
     if (recProducedResults) {
       showToast(`${fileName} 识别完成`, 'info');
     } else {
-      showToast('未检测到语音。请确保：1) 音量未静音 2) 麦克风可用 3) 环境安静', 'error');
+      showToast('❌ 未识别到语音 — 请取下耳机，调大音量，确保麦克风可用后重试', 'error');
     }
 
     if (NAV.currentModule !== 'interp') {
