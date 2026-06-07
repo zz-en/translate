@@ -67,7 +67,8 @@ app/.playwright/
 app/.playwright-cli/
 
 # =============================================================================
-# OS generated files
+# Demo / docs assets (local only)
 # =============================================================================
+docs/demo-script.md
 Desktop.ini
 $RECYCLE.BIN/
