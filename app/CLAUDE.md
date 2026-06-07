@@ -34,10 +34,10 @@ app/
 ## 环境变量 (.env)
 ```
 PORT=3000
-ASR_BASE_URL=wss://rtasr.xfyun.cn/v1/ws
+ASR_BASE_URL=wss://rtasr.xfyun.cn/v1/asr/ws
 TRANSLATE_APP_ID=your_app_id
 TRANSLATE_APP_SECRET=your_app_secret
-ANTHROPIC_API_KEY=               # 空，不使用
+DEEPSEEK_API_KEY=               # 可选，启用 AI 功能
 ```
 
 ## 核心数据流
@@ -219,7 +219,22 @@ const LANG_MAP = {
 | GET | `/api/history/:sessionId` | 获取当前会话历史记录 |
 | GET | `/api/export/:sessionId?format=srt|txt|html` | 导出转录记录 |
 | POST | `/api/refine` | 重新翻译 (保留接口) |
+| POST | `/api/ai/translate-context` | AI 上下文感知翻译 |
+| POST | `/api/ai/polish` | AI 翻译润色 |
+| POST | `/api/ai/correct` | AI 智能纠错 |
+| POST | `/api/ai/summary` | AI 会议纪要生成 |
+| GET | `/api/ai/status` | AI 服务状态 |
 | WS | `/ws` | 实时 WebSocket 通信 |
+
+## WebSocket 消息类型
+| 类型 | 方向 | 说明 |
+|------|------|------|
+| `asr_text` | 客户端→服务器 | 浏览器识别的文本 |
+| `config` | 客户端→服务器 | 语言/场景配置 |
+| `asr` | 服务器→客户端 | ASR 识别结果 |
+| `translation` | 服务器→客户端 | 翻译结果 |
+| `translation_polished` | 服务器→客户端 | AI 润色后的翻译 |
+| `status` | 服务器→客户端 | 连接状态/会话信息 |
 
 ## 快捷键
 | 快捷键 | 功能 |
@@ -240,7 +255,28 @@ const LANG_MAP = {
   - 音频设备选择器：支持立体声混音/Stereo Mix 数字采集
   - 纯字幕模式：透明背景+金色译文，类似网易云桌面歌词
   - 透明度滑块 (0-100%) + 快捷切换按钮
+- **2026-06-07**: 对话模式模块 (Conversation Mode):
+  - 双向互译：两人分别说不同语言时自动检测并翻译
+  - 对话气泡 UI：左侧"你"蓝色气泡，右侧"对方"渐变色气泡
+  - 自动语言检测：基于字符集 (CJK/非CJK) 自动识别说话人
+  - 语言预设：中↔英、中↔日、中↔韩、英↔日 一键切换
+  - 对话历史管理：清空、搜索
+  - 会议纪要：AI 自动生成结构化会议总结
+- **2026-06-07**: DeepSeek AI 集成:
+  - 翻译润色：翻译后异步调用 DeepSeek 优化译文
+  - AI 状态指示器：显示 DeepSeek 是否可用
+  - 新增 API: `/api/ai/translate-context`, `/api/ai/polish`, `/api/ai/correct`, `/api/ai/summary`, `/api/ai/status`
+  - 逐条目润色按钮：每条转录支持手动触发 AI 润色 (✨)
+  - `.env` 新增 `DEEPSEEK_API_KEY` 配置项
+- **2026-06-07**: UI/UX 优化:
+  - 首页 6 宫格 (3×2) 卡片布局
+  - 响应式网格适配：桌面 3 列 → 平板 2 列 → 手机 1 列
+  - AI 润色标记：`✨AI` 后缀 + 紫色边框高亮
+  - 设置面板 AI 状态实时显示
 - **2026-06-07**: Bug 修复：
+  - updateHistoryEntry 过渡到 final 时自动添加润色按钮
+  - asr_text 处理支持对话模式 speaker/target_lang 参数
+  - translation_polished 消息类型支持前端增量更新
   - /api/refine 传参修复
   - 桌面模块语言切换修复（所有模式生效）
   - PiP 回退模式下字幕更新修复

@@ -94,6 +94,15 @@ const NAV = {
         updateMicButton();
         // Restore subtitles from last known state
         restoreSubtitles();
+        checkInterpAIStatus();
+        break;
+
+      case 'conv':
+        if (!state.isConnected && (!state.ws || state.ws.readyState !== WebSocket.OPEN)) {
+          connectWebSocket();
+        }
+        checkAIStatus();
+        updateConvPresetButtons();
         break;
 
       case 'upload':
@@ -238,6 +247,45 @@ const desktopState = {
   lastTranslation: '',
 };
 
+// Conversation mode DOM
+const domConv = {
+  messages: $('#convMessages'),
+  micBtn: $('#convMicBtn'),
+  micIcon: $('#convMicBtn .conv-mic-icon'),
+  micLabel: $('#convMicBtn .conv-mic-label'),
+  meterBar: $('#convMeterBar'),
+  langA: $('#convLangA'),
+  langB: $('#convLangB'),
+  scene: $('#convScene'),
+  translateToggle: $('#convTranslateToggle'),
+  ttsToggle: $('#convTTSToggle'),
+  autoDetect: $('#convAutoDetect'),
+  summaryBtn: $('#convSummaryBtn'),
+  clearBtn: $('#convClearBtn'),
+  aiStatus: $('#convAIStatus'),
+};
+
+// Conversation mode state
+const convState = {
+  active: false,
+  speechRecognition: null,
+  mediaStream: null,
+  audioContext: null,
+  analyser: null,
+  sessionId: null,
+  messages: [],           // { speaker: 'a'|'b', original: '', translation: '', isFinal: bool, element: HTMLElement }
+  pendingMap: new Map(),   // segId → { speaker, original, translation, element }
+  segIdCounter: 0,
+  config: {
+    langA: 'en',
+    langB: 'zh',
+    translateEnabled: true,
+    scene: 'edu',
+  },
+  ttsEnabled: false,
+  autoDetect: true,
+};
+
 // ===========================================================================
 // WebSocket — connect to our backend relay server
 // ===========================================================================
@@ -301,10 +349,18 @@ function handleServerMessage(msg) {
 
     case 'translation':
       handleTranslationResult(msg);
+      // Also route to conversation mode if active
+      if (convState.active) {
+        routeTranslationToConv(msg);
+      }
+      break;
+
+    case 'translation_polished':
+      // AI Polish result — update in-place
+      handlePolishedTranslation(msg);
       break;
 
     case 'voiceprint':
-      // Could display speaker identity alongside entries
       break;
 
     case 'error':
@@ -314,6 +370,43 @@ function handleServerMessage(msg) {
 
     default:
       console.log('Unknown server message:', msg.type);
+  }
+}
+
+function routeTranslationToConv(msg) {
+  const { seg_id, translate } = msg;
+  if (!translate) return;
+  // Find a recent untranslated message in conversation
+  const msgData = convState.messages.find(m => m.isFinal && !m.translation);
+  if (msgData) {
+    msgData.translation = translate;
+    updateConvBubble(msgData.element, msgData.original, translate, true);
+    // TTS for conversation mode
+    if (convState.ttsEnabled) {
+      speakTranslation(translate);
+    }
+  }
+}
+
+function handlePolishedTranslation(msg) {
+  const { seg_id, translate, original_translate } = msg;
+  if (!translate) return;
+
+  // Update interp module if visible
+  const existingEl = document.querySelector(`.transcript-entry[data-seg-id="${seg_id}"]`);
+  if (existingEl) {
+    const transDiv = existingEl.querySelector('.entry-translation');
+    if (transDiv) {
+      transDiv.textContent = translate;
+      existingEl.classList.add('ai-polished');
+    }
+  }
+
+  // Update conversation bubble
+  const convMsg = convState.messages.find(m => m.translation === original_translate);
+  if (convMsg && convMsg.element) {
+    convMsg.translation = translate;
+    updateConvBubble(convMsg.element, convMsg.original, translate, true);
   }
 }
 
@@ -486,6 +579,7 @@ function createHistoryEntry(segId, asr, translate, isFinal, corrected, prevAsr, 
       <span class="entry-badge ${isFinal ? 'final' : 'interim'}">${isFinal ? '✓ 最终' : '⏳ 识别中'}</span>
       ${corrected ? '<span class="entry-badge corrected">已纠正</span>' : ''}
       <span>#${segId}</span>
+      ${isFinal ? '<button class="entry-polish-btn" title="AI润色翻译">✨</button>' : ''}
     </div>
   `;
 
@@ -511,13 +605,22 @@ function updateHistoryEntry(element, segId, asr, translate, isFinal, corrected, 
     transDiv.textContent = translate || (state.config.translateEnabled ? '(翻译中...)' : '');
   }
 
-  // Update meta badges
+  // Update meta badges — add polish button on final transition
   const interimBadge = element.querySelector('.entry-badge.interim');
   if (isFinal && interimBadge) {
     element.classList.remove('current');
     interimBadge.classList.remove('interim');
     interimBadge.classList.add('final');
     interimBadge.textContent = '✓ 最终';
+    // Add polish button if not present
+    if (!element.querySelector('.entry-polish-btn')) {
+      const metaEl = element.querySelector('.entry-meta');
+      const btn = document.createElement('button');
+      btn.className = 'entry-polish-btn';
+      btn.title = 'AI润色翻译';
+      btn.textContent = '✨';
+      if (metaEl) metaEl.appendChild(btn);
+    }
   }
 
   if (corrected) {
@@ -664,6 +767,441 @@ function processTTSQueue() {
 if ('speechSynthesis' in window) {
   speechSynthesis.getVoices();
   speechSynthesis.onvoiceschanged = () => speechSynthesis.getVoices();
+}
+
+// ===========================================================================
+// Conversation Mode — two-way bilingual dialogue with auto language detection
+// ===========================================================================
+
+function readConvConfig() {
+  if (domConv.langA) {
+    const src = domConv.langA.value;
+    convState.config.langA = (src === 'auto') ? 'auto' : (LANG_MAP[src] || src);
+  }
+  if (domConv.langB) {
+    const src = domConv.langB.value;
+    convState.config.langB = (src === 'auto') ? 'auto' : (LANG_MAP[src] || src);
+  }
+  if (domConv.translateToggle) {
+    convState.config.translateEnabled = domConv.translateToggle.checked;
+  }
+  if (domConv.ttsToggle) {
+    convState.ttsEnabled = domConv.ttsToggle.checked;
+  }
+  if (domConv.autoDetect) {
+    convState.autoDetect = domConv.autoDetect.checked;
+  }
+  if (domConv.scene) {
+    convState.config.scene = domConv.scene.value;
+  }
+}
+
+function sendConvConfig() {
+  readConvConfig();
+  if (state.ws && state.ws.readyState === WebSocket.OPEN) {
+    state.ws.send(JSON.stringify({
+      type: 'config',
+      sourceLang: convState.config.langA,
+      targetLang: convState.config.langB,
+      translateEnabled: convState.config.translateEnabled,
+      scene: convState.config.scene,
+    }));
+  }
+}
+
+function updateConvPresetButtons() {
+  const langA = domConv.langA ? domConv.langA.value : 'en';
+  const langB = domConv.langB ? domConv.langB.value : 'zh';
+  const presetBtns = document.querySelectorAll('.conv-preset-btn');
+  presetBtns.forEach(btn => btn.classList.remove('active'));
+
+  const pair = langA + '-' + langB;
+  const presets = {
+    'zh-en': '#convPresetZhEn', 'en-zh': '#convPresetZhEn',
+    'zh-ja': '#convPresetZhJa', 'ja-zh': '#convPresetZhJa',
+    'zh-ko': '#convPresetZhKo', 'ko-zh': '#convPresetZhKo',
+    'en-ja': '#convPresetEnJa', 'ja-en': '#convPresetEnJa',
+  };
+  const activeBtn = document.querySelector(presets[pair]);
+  if (activeBtn) activeBtn.classList.add('active');
+}
+
+function applyConvPreset(pair) {
+  const [a, b] = pair.split('-');
+  if (domConv.langA) domConv.langA.value = a;
+  if (domConv.langB) domConv.langB.value = b;
+  sendConvConfig();
+  updateConvPresetButtons();
+}
+
+async function checkAIStatus() {
+  if (!domConv.aiStatus) return;
+  try {
+    const resp = await fetch('/api/ai/status');
+    const data = await resp.json();
+    if (data.available) {
+      domConv.aiStatus.className = 'ai-status available clickable';
+      domConv.aiStatus.querySelector('.ai-text').textContent = 'DeepSeek AI 可用';
+      domConv.aiStatus.title = '点击更换 API Key';
+      if (domConv.summaryBtn) domConv.summaryBtn.disabled = false;
+    } else {
+      domConv.aiStatus.className = 'ai-status unavailable clickable';
+      domConv.aiStatus.querySelector('.ai-text').textContent = '点击配置 DeepSeek API Key';
+      domConv.aiStatus.title = '点击配置 API Key';
+      if (domConv.summaryBtn) domConv.summaryBtn.disabled = true;
+    }
+  } catch (_) {
+    domConv.aiStatus.className = 'ai-status unavailable clickable';
+    domConv.aiStatus.querySelector('.ai-text').textContent = 'AI 状态未知 — 点击配置';
+    domConv.aiStatus.title = '点击配置 API Key';
+  }
+}
+
+// Auto-detect which speaker based on language of the text
+function detectSpeaker(text) {
+  if (!convState.autoDetect) return 'a'; // Default to speaker A
+  // Simple heuristic: check for CJK characters
+  const hasCJK = /[一-鿿㐀-䶿豈-﫿぀-ゟ゠-ヿ가-힯]/.test(text);
+  const langA = convState.config.langA;
+  const langB = convState.config.langB;
+
+  if (langA === 'auto' && langB === 'auto') return 'a';
+
+  const langAIsCJK = ['zh-CN', 'zh', 'ja', 'ko'].includes(langA);
+  const langBIsCJK = ['zh-CN', 'zh', 'ja', 'ko'].includes(langB);
+
+  if (langAIsCJK && !langBIsCJK) return hasCJK ? 'a' : 'b';
+  if (!langAIsCJK && langBIsCJK) return hasCJK ? 'b' : 'a';
+  // Both CJK or both non-CJK — alternate based on last speaker
+  const lastMsg = convState.messages.filter(m => m.isFinal).pop();
+  return lastMsg && lastMsg.speaker === 'a' ? 'b' : 'a';
+}
+
+function createConvBubble(speaker, original, translation, isFinal) {
+  const bubble = document.createElement('div');
+  bubble.className = `conv-bubble speaker-${speaker}`;
+
+  const speakerLabel = speaker === 'a' ? '你' : '对方';
+  const badgeClass = isFinal ? 'final' : 'interim';
+  const badgeText = isFinal ? '✓' : '⏳';
+
+  bubble.innerHTML = `
+    <div class="conv-bubble-wrapper">
+      <div class="conv-bubble-text">${escapeHtml(original)}</div>
+      ${translation ? `<div class="conv-bubble-translation">${escapeHtml(translation)}</div>` : ''}
+      <div class="conv-bubble-meta">
+        <span>${speakerLabel}</span>
+        <span class="conv-bubble-badge ${badgeClass}">${badgeText}</span>
+      </div>
+    </div>
+  `;
+  return bubble;
+}
+
+function updateConvBubble(element, original, translation, isFinal) {
+  const textEl = element.querySelector('.conv-bubble-text');
+  if (textEl) textEl.textContent = original;
+  const transEl = element.querySelector('.conv-bubble-translation');
+  if (transEl && translation) {
+    transEl.textContent = translation;
+  } else if (!transEl && translation) {
+    const wrapper = element.querySelector('.conv-bubble-wrapper');
+    const transDiv = document.createElement('div');
+    transDiv.className = 'conv-bubble-translation';
+    transDiv.textContent = translation;
+    if (wrapper) wrapper.insertBefore(transDiv, wrapper.querySelector('.conv-bubble-meta'));
+  }
+  const badge = element.querySelector('.conv-bubble-badge');
+  if (badge && isFinal) {
+    badge.className = 'conv-bubble-badge final';
+    badge.textContent = '✓';
+    element.classList.add('final');
+  }
+}
+
+async function startConvRecording() {
+  if (convState.active) return stopConvRecording();
+
+  // Stop interp recording if active
+  if (state.isRecording) stopRecording();
+  // Stop desktop if active
+  if (desktopState.active) stopDesktopSession();
+
+  // Read config
+  readConvConfig();
+  sendConvConfig();
+
+  // Request mic
+  try {
+    convState.mediaStream = await navigator.mediaDevices.getUserMedia({
+      audio: { sampleRate: 16000, channelCount: 1, echoCancellation: true, noiseSuppression: true, autoGainControl: true },
+    });
+  } catch (err) {
+    showToast('无法访问麦克风，请检查权限设置', 'error');
+    return;
+  }
+
+  // Audio context for meter
+  convState.audioContext = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: 16000 });
+  const source = convState.audioContext.createMediaStreamSource(convState.mediaStream);
+  convState.analyser = convState.audioContext.createAnalyser();
+  convState.analyser.fftSize = 256;
+  source.connect(convState.analyser);
+
+  // Start speech recognition
+  const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+  if (!SpeechRecognition) {
+    showToast('此浏览器不支持语音识别，请使用 Chrome 或 Edge', 'error');
+    return;
+  }
+
+  const rec = new SpeechRecognition();
+  rec.continuous = true;
+  rec.interimResults = true;
+  rec.lang = mapLangForSpeechAPI(convState.autoDetect ? 'auto' : convState.config.langA);
+
+  rec.onresult = (event) => {
+    let interim = '';
+    let finalText = '';
+    for (let i = event.resultIndex; i < event.results.length; i++) {
+      const result = event.results[i];
+      if (result.isFinal) {
+        finalText += result[0].transcript;
+      } else {
+        interim += result[0].transcript;
+      }
+    }
+
+    // Handle interim
+    if (interim) {
+      const segId = convState.segIdCounter;
+      const speaker = detectSpeaker(interim);
+      const existing = convState.pendingMap.get(segId);
+      if (existing) {
+        updateConvBubble(existing.element, interim, existing.translation, false);
+      } else {
+        const bubble = createConvBubble(speaker, interim, '', false);
+        appendConvBubble(bubble);
+        convState.pendingMap.set(segId, { speaker, original: interim, translation: '', element: bubble });
+      }
+    }
+
+    // Handle final
+    if (finalText) {
+      const segId = convState.segIdCounter++;
+      const speaker = detectSpeaker(finalText);
+
+      // Update or create bubble
+      const existing = convState.pendingMap.get(segId);
+      if (existing && existing.element) {
+        updateConvBubble(existing.element, finalText, '', true);
+        convState.pendingMap.delete(segId);
+        convState.messages.push({ speaker, original: finalText, translation: '', isFinal: true, element: existing.element });
+      } else {
+        const bubble = createConvBubble(speaker, finalText, '', true);
+        appendConvBubble(bubble);
+        convState.messages.push({ speaker, original: finalText, translation: '', isFinal: true, element: bubble });
+      }
+
+      // Send to server for translation
+      const targetLang = speaker === 'a' ? convState.config.langB : convState.config.langA;
+      if (state.ws && state.ws.readyState === WebSocket.OPEN && convState.config.translateEnabled) {
+        state.ws.send(JSON.stringify({
+          type: 'asr_text',
+          text: finalText,
+          is_final: true,
+          speaker: speaker,
+          target_lang: targetLang,
+          source_lang: speaker === 'a' ? convState.config.langA : convState.config.langB,
+        }));
+      }
+    }
+
+    // Volume meter
+    if (convState.analyser) updateConvMeter();
+  };
+
+  rec.onerror = (event) => {
+    if (event.error === 'no-speech' || event.error === 'aborted') return;
+    console.error('Conv speech error:', event.error);
+    if (event.error === 'not-allowed') {
+      showToast('麦克风权限被拒绝', 'error');
+    }
+  };
+
+  rec.onend = () => {
+    if (convState.active) {
+      try { rec.start(); } catch (e) {}
+    }
+  };
+
+  convState.speechRecognition = rec;
+  rec.start();
+
+  convState.active = true;
+  updateConvUI();
+
+  // Start meter updater
+  convState._meterInterval = setInterval(() => {
+    if (convState.analyser) updateConvMeter();
+  }, 100);
+
+  showToast('对话模式已启动', 'info');
+}
+
+function stopConvRecording() {
+  convState.active = false;
+
+  if (convState.speechRecognition) {
+    try { convState.speechRecognition.stop(); } catch (e) {}
+    convState.speechRecognition = null;
+  }
+  if (convState.mediaStream) {
+    convState.mediaStream.getTracks().forEach(t => t.stop());
+    convState.mediaStream = null;
+  }
+  if (convState.audioContext) {
+    convState.audioContext.close();
+    convState.audioContext = null;
+  }
+  convState.analyser = null;
+  if (convState._meterInterval) {
+    clearInterval(convState._meterInterval);
+    convState._meterInterval = null;
+  }
+  if (state.ws && state.ws.readyState === WebSocket.OPEN) {
+    state.ws.send(JSON.stringify({ type: 'end' }));
+  }
+
+  updateConvUI();
+  showToast('对话已停止', 'info');
+}
+
+function updateConvUI() {
+  if (!domConv.micBtn) return;
+  if (convState.active) {
+    domConv.micBtn.classList.add('recording');
+    if (domConv.micIcon) domConv.micIcon.textContent = '⏹️';
+    if (domConv.micLabel) domConv.micLabel.textContent = '停止对话';
+  } else {
+    domConv.micBtn.classList.remove('recording');
+    if (domConv.micIcon) domConv.micIcon.textContent = '🎤';
+    if (domConv.micLabel) domConv.micLabel.textContent = '开始对话';
+  }
+}
+
+function updateConvMeter() {
+  if (!convState.analyser || !domConv.meterBar) return;
+  const data = new Uint8Array(convState.analyser.frequencyBinCount);
+  convState.analyser.getByteFrequencyData(data);
+  const avg = data.reduce((a, b) => a + b, 0) / data.length;
+  const pct = Math.min(100, (avg / 128) * 100);
+  domConv.meterBar.style.width = pct + '%';
+}
+
+function appendConvBubble(bubble) {
+  if (!domConv.messages) return;
+  const emptyState = domConv.messages.querySelector('.empty-state');
+  if (emptyState) emptyState.remove();
+  domConv.messages.appendChild(bubble);
+  bubble.scrollIntoView({ behavior: 'smooth', block: 'end' });
+}
+
+// Override translation handler for conversation messages
+function handleConvTranslation(segId, translate, polished) {
+  // Find matching message
+  const msg = convState.messages.find(m => m.original && !m.translation);
+  if (msg) {
+    msg.translation = translate;
+    updateConvBubble(msg.element, msg.original, translate, true);
+  }
+}
+
+function clearConvHistory() {
+  convState.messages = [];
+  convState.pendingMap.clear();
+  convState.segIdCounter = 0;
+  if (domConv.messages) {
+    domConv.messages.innerHTML = `
+      <div class="empty-state">
+        <div class="empty-icon">💬</div>
+        <p>对话已清空</p>
+        <p class="sub">点击麦克风按钮开始新对话</p>
+      </div>
+    `;
+  }
+  showToast('对话记录已清空', 'info');
+}
+
+// Meeting summary modal
+async function generateConvSummary() {
+  if (!state.sessionId) {
+    showToast('请先开始对话录制', 'error');
+    return;
+  }
+  if (convState.messages.filter(m => m.isFinal).length < 2) {
+    showToast('至少需要2句完整对话才能生成纪要', 'error');
+    return;
+  }
+
+  // Show modal with loading
+  showSummaryModal(null, true);
+
+  try {
+    const resp = await fetch('/api/ai/summary', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ sessionId: state.sessionId }),
+    });
+    const data = await resp.json();
+    updateSummaryModal(data.summary || '生成失败，请稍后重试');
+  } catch (err) {
+    updateSummaryModal('请求失败: ' + err.message);
+  }
+}
+
+function showSummaryModal(content, loading) {
+  // Remove existing
+  const existing = document.querySelector('.summary-modal-overlay');
+  if (existing) existing.remove();
+
+  const overlay = document.createElement('div');
+  overlay.className = 'summary-modal-overlay';
+  overlay.innerHTML = `
+    <div class="summary-modal">
+      <div class="summary-modal-header">
+        <h3>📋 会议纪要</h3>
+        <button class="summary-modal-close">✕</button>
+      </div>
+      <div class="summary-modal-body${loading ? ' loading' : ''}">${loading ? 'AI 正在生成会议纪要...' : (content || '')}</div>
+      <div class="summary-modal-footer">
+        <span style="font-size:11px;color:var(--text-muted);">生成时间: ${new Date().toLocaleString('zh-CN')}</span>
+        <button class="btn-sm summary-export-btn">📥 复制</button>
+      </div>
+    </div>
+  `;
+
+  document.body.appendChild(overlay);
+
+  // Close handlers
+  overlay.querySelector('.summary-modal-close').addEventListener('click', () => overlay.remove());
+  overlay.addEventListener('click', (e) => { if (e.target === overlay) overlay.remove(); });
+
+  // Copy button
+  overlay.querySelector('.summary-export-btn').addEventListener('click', () => {
+    const body = overlay.querySelector('.summary-modal-body');
+    if (body && !body.classList.contains('loading')) {
+      navigator.clipboard.writeText(body.textContent).then(() => showToast('已复制到剪贴板', 'info'));
+    }
+  });
+}
+
+function updateSummaryModal(content) {
+  const body = document.querySelector('.summary-modal-body');
+  if (body) {
+    body.classList.remove('loading');
+    body.textContent = content;
+  }
 }
 
 // ===========================================================================
@@ -1527,101 +2065,262 @@ function handleFileUpload(file, useUploadModuleSettings) {
   // Stop any active recording
   if (state.isRecording) stopRecording();
 
+  const fileExt = file.name.split('.').pop().toLowerCase();
+  const isVideo = ['mp4', 'webm', 'mov', 'mkv', 'avi', 'flv', 'wmv', 'm4v'].includes(fileExt);
+
+  showToast(`正在处理: ${file.name}${isVideo ? ' (提取音频中...)' : ''}`, 'info');
+
+  if (useUploadModuleSettings && domUpload.uploadProgress) {
+    domUpload.uploadProgress.classList.add('visible');
+    domUpload.uploadArea.style.display = 'none';
+  }
+
+  // Try direct decode first — Chrome/Edge natively decode MP4 audio tracks
   const reader = new FileReader();
-  reader.onload = async function(e) {
+  reader.onload = async (e) => {
     const arrayBuffer = e.target.result;
 
-    // Decode audio to get Float32 PCM
+    // Attempt 1: Direct decode (works for audio + Chrome/Edge MP4)
     const audioCtx = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: 16000 });
     try {
-      const audioBuffer = await audioCtx.decodeAudioData(arrayBuffer);
-
-      // Resample to 16kHz mono if needed
-      const offlineCtx = new OfflineAudioContext(1, audioBuffer.duration * 16000, 16000);
-      const offlineSource = offlineCtx.createBufferSource();
-      offlineSource.buffer = audioBuffer;
-      offlineSource.connect(offlineCtx.destination);
-      offlineSource.start(0);
-
-      const renderedBuffer = await offlineCtx.startRendering();
-      const float32Data = renderedBuffer.getChannelData(0);
-
-      // Stream in chunks simulating real-time (200ms chunks)
-      const chunkSize = 16000 * 0.2; // 3200 samples per 200ms
-      let offset = 0;
-
-      showToast(`正在处理: ${file.name}`, 'info');
-
-      // Show progress in upload module
-      if (useUploadModuleSettings && domUpload.uploadProgress) {
-        domUpload.uploadProgress.classList.add('visible');
-        domUpload.uploadArea.style.display = 'none';
-      }
-
-      function sendNextChunk() {
-        const totalChunks = Math.ceil(float32Data.length / chunkSize);
-        const currentChunk = Math.floor(offset / chunkSize);
-        const progress = Math.min(100, Math.round((offset / float32Data.length) * 100));
-
-        // Update progress
-        if (useUploadModuleSettings) {
-          if (domUpload.progressBarFill) domUpload.progressBarFill.style.width = progress + '%';
-          if (domUpload.progressText) domUpload.progressText.textContent = `处理中 ${progress}% (${currentChunk}/${totalChunks})`;
-        }
-
-        if (offset >= float32Data.length) {
-          // End of file
-          if (state.ws && state.ws.readyState === WebSocket.OPEN) {
-            state.ws.send(JSON.stringify({ type: 'end' }));
-          }
-          if (useUploadModuleSettings) {
-            if (domUpload.uploadProgress) domUpload.uploadProgress.classList.remove('visible');
-            if (domUpload.uploadArea) domUpload.uploadArea.style.display = '';
-            if (domUpload.uploadStatus) domUpload.uploadStatus.style.display = '';
-            if (domUpload.uploadStatusIcon) domUpload.uploadStatusIcon.textContent = '✅';
-            if (domUpload.uploadStatusText) domUpload.uploadStatusText.textContent = '上传完成！查看同声传译模块获取识别结果';
-          }
-          showToast('音频处理完毕', 'info');
-          return;
-        }
-
-        const end = Math.min(offset + chunkSize, float32Data.length);
-        const chunk = float32Data.slice(offset, end);
-
-        if (state.ws && state.ws.readyState === WebSocket.OPEN) {
-          state.ws.send(chunk.buffer);
-        }
-
-        offset = end;
-        setTimeout(sendNextChunk, 200);
-      }
-
-      // Send config before starting
-      if (useUploadModuleSettings) {
-        sendConfigFromUpload();
-      } else {
-        sendConfigFromInterp();
-      }
-
-      state.isRecording = true;
-      state.startTime = Date.now();
-      updateMicButton();
-      state.durationTimer = setInterval(updateDuration, 1000);
-
-      sendNextChunk();
-    } catch (err) {
-      console.error('Audio decode error:', err);
-      showToast('音频解码失败，请确认文件格式正确', 'error');
-      if (useUploadModuleSettings) {
-        if (domUpload.uploadProgress) domUpload.uploadProgress.classList.remove('visible');
-        if (domUpload.uploadArea) domUpload.uploadArea.style.display = '';
-      }
-    } finally {
+      const audioBuffer = await audioCtx.decodeAudioData(arrayBuffer.slice(0));
+      const float32Data = await resampleAudioBuffer(audioBuffer);
       audioCtx.close();
+      streamPCMData(float32Data, file.name, useUploadModuleSettings);
+      return;
+    } catch (err) {
+      audioCtx.close();
+      // Direct decode failed — if video, try video element extraction
+      if (isVideo) {
+        console.log('Direct decode failed for video, trying video element extraction...');
+        processVideoFileFromBuffer(arrayBuffer, file, useUploadModuleSettings);
+      } else {
+        console.error('Audio decode error:', err.message);
+        showToast('音频解码失败，请确认文件格式正确', 'error');
+        resetUploadUI(useUploadModuleSettings);
+      }
+    }
+  };
+  reader.onerror = () => {
+    showToast('文件读取失败', 'error');
+    resetUploadUI(useUploadModuleSettings);
+  };
+  reader.readAsArrayBuffer(file);
+}
+
+// Resample AudioBuffer to 16kHz mono Float32
+async function resampleAudioBuffer(audioBuffer) {
+  const offlineCtx = new OfflineAudioContext(1, audioBuffer.duration * 16000, 16000);
+  const source = offlineCtx.createBufferSource();
+  source.buffer = audioBuffer;
+  source.connect(offlineCtx.destination);
+  source.start(0);
+  const rendered = await offlineCtx.startRendering();
+  return rendered.getChannelData(0);
+}
+
+// Fallback: extract audio from video using <video> element + MediaRecorder
+function processVideoFileFromBuffer(arrayBuffer, file, useUploadModuleSettings) {
+  const blob = new Blob([arrayBuffer], { type: file.type || 'video/mp4' });
+  const videoUrl = URL.createObjectURL(blob);
+  const videoEl = document.createElement('video');
+  videoEl.src = videoUrl;
+  videoEl.muted = true;
+  videoEl.playsInline = true;
+  videoEl.preload = 'auto';
+  videoEl.crossOrigin = 'anonymous';
+
+  // Wait for video to be playable
+  videoEl.oncanplay = async () => {
+    const duration = videoEl.duration;
+    if (!duration || !isFinite(duration) || duration > 7200) {
+      cleanup();
+      showToast('视频时长异常，无法处理（最长支持2小时）', 'error');
+      resetUploadUI(useUploadModuleSettings);
+      return;
+    }
+
+    showToast(`正在提取音频 (${Math.floor(duration)}秒)...`, 'info');
+
+    // Offline context to render the entire duration
+    const offlineCtx = new OfflineAudioContext(1, Math.ceil(duration * 16000), 16000);
+    const offlineSource = offlineCtx.createMediaElementSource(videoEl);
+    offlineSource.connect(offlineCtx.destination);
+
+    videoEl.currentTime = 0;
+    try { await videoEl.play(); } catch (_) { /* autoplay may fail */ }
+
+    try {
+      const renderedBuffer = await offlineCtx.startRendering();
+      cleanup();
+
+      const float32Data = renderedBuffer.getChannelData(0);
+      streamPCMData(float32Data, file.name, useUploadModuleSettings);
+    } catch (err) {
+      cleanup();
+      console.error('Video extraction error:', err.message);
+      showToast('视频音频提取失败，请尝试转换为 MP3/WAV 格式', 'error');
+      resetUploadUI(useUploadModuleSettings);
     }
   };
 
-  reader.readAsArrayBuffer(file);
+  videoEl.onerror = () => {
+    cleanup();
+    showToast('视频加载失败，请确认文件格式正确', 'error');
+    resetUploadUI(useUploadModuleSettings);
+  };
+
+  // Timeout fallback — if canplay never fires
+  const timeoutId = setTimeout(() => {
+    if (videoEl.readyState < 2) {
+      cleanup();
+      showToast('视频加载超时，请尝试转换为音频格式', 'error');
+      resetUploadUI(useUploadModuleSettings);
+    }
+  }, 30000);
+
+  function cleanup() {
+    clearTimeout(timeoutId);
+    videoEl.pause();
+    videoEl.removeAttribute('src');
+    videoEl.load();
+    URL.revokeObjectURL(videoUrl);
+  }
+}
+
+// Stream decoded audio: play through speakers + capture via browser SpeechRecognition.
+// Does NOT use iFlytek — avoids 404/auth issues. Relies on system audio loopback.
+function streamPCMData(float32Data, fileName, useUploadModuleSettings) {
+  if (state.isRecording) stopRecording();
+
+  // Send config to server (for translation language settings only, no ASR)
+  if (useUploadModuleSettings) {
+    sendConfigFromUpload();
+  } else {
+    sendConfigFromInterp();
+  }
+
+  const duration = float32Data.length / 16000;
+  const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+
+  if (!SpeechRecognition) {
+    showToast('此浏览器不支持语音识别，请使用 Chrome 或 Edge', 'error');
+    resetUploadUI(useUploadModuleSettings);
+    return;
+  }
+
+  // ---- Create audio buffer and play through speakers ----
+  const audioCtx = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: 16000 });
+  const audioBuffer = audioCtx.createBuffer(1, float32Data.length, 16000);
+  audioBuffer.getChannelData(0).set(float32Data);
+
+  // ---- Also create a silent MediaStream to keep SpeechRecognition happy ----
+  // SpeechRecognition needs a mic permission context; we provide a dummy stream
+  let dummyStream = null;
+  navigator.mediaDevices.getUserMedia({ audio: true })
+    .then(s => { dummyStream = s; })
+    .catch(() => {});
+
+  // ---- Start speech recognition ----
+  const rec = new SpeechRecognition();
+  rec.continuous = true;
+  rec.interimResults = true;
+  rec.lang = mapLangForSpeechAPI(state.config.sourceLang);
+
+  let recProducedResults = false;
+
+  rec.onresult = (event) => {
+    let interim = '', finalText = '';
+    for (let i = event.resultIndex; i < event.results.length; i++) {
+      const r = event.results[i];
+      if (r.isFinal) finalText += r[0].transcript;
+      else interim += r[0].transcript;
+    }
+    if (interim || finalText) recProducedResults = true;
+    if (interim && state.ws && state.ws.readyState === WebSocket.OPEN) {
+      state.ws.send(JSON.stringify({ type: 'asr_text', text: interim, is_final: false }));
+    }
+    if (finalText && state.ws && state.ws.readyState === WebSocket.OPEN) {
+      state.ws.send(JSON.stringify({ type: 'asr_text', text: finalText, is_final: true }));
+    }
+  };
+
+  rec.onerror = (e) => {
+    if (e.error === 'no-speech' || e.error === 'aborted') return;
+    console.error('SR error:', e.error);
+  };
+
+  // ---- Play audio through speakers ----
+  showToast(`正在识别 (${Math.floor(duration)}秒)... 请保持音量开启`, 'info');
+  const source = audioCtx.createBufferSource();
+  source.buffer = audioBuffer;
+  const gain = audioCtx.createGain();
+  gain.gain.value = 1.0;
+  source.connect(gain);
+  gain.connect(audioCtx.destination);
+  source.start(0);
+
+  // ---- State ----
+  state.isRecording = true;
+  state.startTime = Date.now();
+  updateMicButton();
+  state.durationTimer = setInterval(updateDuration, 1000);
+  rec.start();
+
+  // ---- Progress bar ----
+  const startTime = Date.now();
+  const progressInterval = setInterval(() => {
+    const elapsed = (Date.now() - startTime) / 1000;
+    const progress = Math.min(100, Math.round((elapsed / duration) * 100));
+    if (useUploadModuleSettings) {
+      if (domUpload.progressBarFill) domUpload.progressBarFill.style.width = progress + '%';
+      if (domUpload.progressText) {
+        domUpload.progressText.textContent = `识别中 ${progress}% (${Math.floor(elapsed)}s/${Math.floor(duration)}s)`;
+      }
+    }
+  }, 500);
+
+  // ---- Completion ----
+  const totalMs = (duration + 5) * 1000;
+  setTimeout(() => {
+    clearInterval(progressInterval);
+    try { rec.stop(); } catch (_) {}
+    try { audioCtx.close(); } catch (_) {}
+    if (dummyStream) dummyStream.getTracks().forEach(t => t.stop());
+    state.isRecording = false;
+    state.startTime = null;
+    clearInterval(state.durationTimer);
+    state.durationTimer = null;
+    updateMicButton();
+    updateUploadComplete(useUploadModuleSettings);
+
+    if (recProducedResults) {
+      showToast(`${fileName} 识别完成`, 'info');
+    } else {
+      showToast('未检测到语音。请确保：1) 音量未静音 2) 麦克风可用 3) 环境安静', 'error');
+    }
+
+    if (NAV.currentModule !== 'interp') {
+      setTimeout(() => NAV.navigateTo('interp'), 500);
+    }
+  }, totalMs);
+}
+
+function updateUploadComplete(useUploadModuleSettings) {
+  if (useUploadModuleSettings) {
+    if (domUpload.uploadProgress) domUpload.uploadProgress.classList.remove('visible');
+    if (domUpload.uploadArea) domUpload.uploadArea.style.display = '';
+    if (domUpload.uploadStatus) domUpload.uploadStatus.style.display = '';
+    if (domUpload.uploadStatusIcon) domUpload.uploadStatusIcon.textContent = '✅';
+    if (domUpload.uploadStatusText) domUpload.uploadStatusText.textContent = '处理完成！查看同声传译模块获取识别结果';
+  }
+}
+
+function resetUploadUI(useUploadModuleSettings) {
+  if (useUploadModuleSettings) {
+    if (domUpload.uploadProgress) domUpload.uploadProgress.classList.remove('visible');
+    if (domUpload.uploadArea) domUpload.uploadArea.style.display = '';
+  }
 }
 
 // ===========================================================================
@@ -1700,6 +2399,78 @@ function sendConfigToServer() {
     }));
   }
 }
+
+// ===========================================================================
+// AI Polish / Correct handlers
+// ===========================================================================
+
+async function checkInterpAIStatus() {
+  const statusEl = $('#interpAIStatus');
+  if (!statusEl) return;
+  try {
+    const resp = await fetch('/api/ai/status');
+    const data = await resp.json();
+    if (data.available) {
+      statusEl.className = 'ai-status available clickable';
+      statusEl.querySelector('.ai-text').textContent = 'DeepSeek AI 润色可用';
+      statusEl.title = '点击更换 API Key';
+    } else {
+      statusEl.className = 'ai-status unavailable clickable';
+      statusEl.querySelector('.ai-text').textContent = '点击配置 DeepSeek API Key';
+      statusEl.title = '点击配置 API Key';
+    }
+  } catch (_) {
+    statusEl.className = 'ai-status unavailable clickable';
+    statusEl.querySelector('.ai-text').textContent = 'AI 状态未知 — 点击配置';
+    statusEl.title = '点击配置 API Key';
+  }
+}
+
+async function polishEntry(entryEl, segId) {
+  const origEl = entryEl.querySelector('.entry-original');
+  const transEl = entryEl.querySelector('.entry-translation');
+  const polishBtn = entryEl.querySelector('.entry-polish-btn');
+
+  if (!transEl || !polishBtn) return;
+  const originalText = transEl.textContent.replace('(翻译中...)', '').trim();
+  if (!originalText) return;
+
+  // Show loading
+  polishBtn.textContent = '⏳';
+  polishBtn.disabled = true;
+
+  try {
+    const resp = await fetch('/api/ai/polish', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ text: originalText, targetLang: state.config.targetLang || 'zh-CN' }),
+    });
+    const data = await resp.json();
+    if (data.polished && data.polished !== originalText) {
+      transEl.textContent = data.polished;
+      entryEl.classList.add('ai-polished');
+      polishBtn.textContent = '✅';
+      showToast('AI润色完成', 'info');
+    } else {
+      polishBtn.textContent = '✨';
+      showToast('润色无变化', 'info');
+    }
+  } catch (err) {
+    polishBtn.textContent = '✨';
+    showToast('润色失败: ' + err.message, 'error');
+  }
+  polishBtn.disabled = false;
+}
+
+// Delegate polish button clicks on history lists
+document.addEventListener('click', (e) => {
+  if (e.target.classList.contains('entry-polish-btn')) {
+    e.stopPropagation();
+    const entry = e.target.closest('.transcript-entry');
+    const segId = entry ? entry.dataset.segId : null;
+    if (entry && segId) polishEntry(entry, segId);
+  }
+});
 
 // ===========================================================================
 // Toast notifications
@@ -1937,6 +2708,61 @@ if (domDesktop.translateToggle) {
 }
 
 // ===========================================================================
+// Event Listeners — Conversation Module
+// ===========================================================================
+
+if (domConv.micBtn) {
+  domConv.micBtn.addEventListener('click', () => {
+    if (convState.active) {
+      stopConvRecording();
+    } else {
+      startConvRecording();
+    }
+  });
+}
+
+// Quick presets
+const convPresets = {
+  convPresetZhEn: 'zh-en',
+  convPresetZhJa: 'zh-ja',
+  convPresetZhKo: 'zh-ko',
+  convPresetEnJa: 'en-ja',
+};
+
+Object.entries(convPresets).forEach(([id, pair]) => {
+  const btn = document.getElementById(id);
+  if (btn) {
+    btn.addEventListener('click', () => applyConvPreset(pair));
+  }
+});
+
+// Language change
+[domConv.langA, domConv.langB].forEach(el => {
+  if (el) {
+    el.addEventListener('change', () => {
+      sendConvConfig();
+      updateConvPresetButtons();
+    });
+  }
+});
+
+// Config toggles
+if (domConv.translateToggle) domConv.translateToggle.addEventListener('change', sendConvConfig);
+if (domConv.ttsToggle) domConv.ttsToggle.addEventListener('change', () => { convState.ttsEnabled = domConv.ttsToggle.checked; });
+if (domConv.autoDetect) domConv.autoDetect.addEventListener('change', () => { convState.autoDetect = domConv.autoDetect.checked; });
+if (domConv.scene) domConv.scene.addEventListener('change', sendConvConfig);
+
+// AI summary
+if (domConv.summaryBtn) {
+  domConv.summaryBtn.addEventListener('click', generateConvSummary);
+}
+
+// Clear
+if (domConv.clearBtn) {
+  domConv.clearBtn.addEventListener('click', clearConvHistory);
+}
+
+// ===========================================================================
 // Event Listeners — History Module
 // ===========================================================================
 
@@ -1989,6 +2815,14 @@ if (domInterp.fontSizeSlider) {
 if (domInterp.searchInput) {
   domInterp.searchInput.addEventListener('input', debounce(performSearchInterp, 150));
 }
+
+// AI status click handlers — open API key config modal
+document.addEventListener('click', (e) => {
+  const aiStatus = e.target.closest('.ai-status.clickable');
+  if (aiStatus) {
+    openApiKeyModal();
+  }
+});
 
 // Keyboard shortcut: Space to toggle recording
 document.addEventListener('keydown', (e) => {
@@ -2243,6 +3077,119 @@ async function enumerateAudioDevices() {
     console.warn('Device enumeration failed:', err.message);
   }
 }
+
+// ===========================================================================
+// API Key Configuration Modal
+// ===========================================================================
+const domApiKey = {
+  overlay: $('#apikeyModalOverlay'),
+  input: $('#apikeyInput'),
+  toggleView: $('#apikeyToggleView'),
+  saveBtn: $('#apikeySaveBtn'),
+  cancelBtn: $('#apikeyCancelBtn'),
+  closeBtn: $('#apikeyModalClose'),
+  status: $('#apikeyStatus'),
+};
+
+function openApiKeyModal() {
+  if (!domApiKey.overlay) return;
+  domApiKey.overlay.classList.remove('hidden');
+  if (domApiKey.input) {
+    domApiKey.input.value = '';
+    domApiKey.input.type = 'password';
+  }
+  if (domApiKey.toggleView) domApiKey.toggleView.textContent = '👁️';
+  if (domApiKey.status) domApiKey.status.className = 'apikey-status hidden';
+  setTimeout(() => { if (domApiKey.input) domApiKey.input.focus(); }, 100);
+}
+
+function closeApiKeyModal() {
+  if (!domApiKey.overlay) return;
+  domApiKey.overlay.classList.add('hidden');
+}
+
+async function saveApiKey() {
+  if (!domApiKey.input || !domApiKey.saveBtn || !domApiKey.status) return;
+
+  const apiKey = domApiKey.input.value.trim();
+  if (!apiKey) {
+    domApiKey.status.className = 'apikey-status error';
+    domApiKey.status.textContent = '请输入有效的 API Key';
+    domApiKey.status.classList.remove('hidden');
+    return;
+  }
+
+  if (!apiKey.startsWith('sk-')) {
+    domApiKey.status.className = 'apikey-status error';
+    domApiKey.status.textContent = 'API Key 格式似乎不正确，DeepSeek Key 通常以 sk- 开头';
+    domApiKey.status.classList.remove('hidden');
+    return;
+  }
+
+  // Show loading
+  domApiKey.saveBtn.disabled = true;
+  domApiKey.saveBtn.textContent = '⏳ 保存中...';
+  domApiKey.status.className = 'apikey-status loading';
+  domApiKey.status.textContent = '正在保存并验证...';
+  domApiKey.status.classList.remove('hidden');
+
+  try {
+    const resp = await fetch('/api/ai/config', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ apiKey }),
+    });
+    const data = await resp.json();
+
+    if (resp.ok && data.success) {
+      domApiKey.status.className = 'apikey-status success';
+      domApiKey.status.textContent = '✅ API Key 已保存！正在刷新 AI 状态...';
+      domApiKey.saveBtn.textContent = '✅ 已保存';
+
+      // Refresh AI status indicators
+      setTimeout(async () => {
+        await checkAIStatus();
+        await checkInterpAIStatus();
+        closeApiKeyModal();
+        showToast('DeepSeek API 已配置成功！AI 功能已启用', 'info');
+      }, 800);
+    } else {
+      throw new Error(data.error || '保存失败');
+    }
+  } catch (err) {
+    domApiKey.status.className = 'apikey-status error';
+    domApiKey.status.textContent = '保存失败: ' + err.message;
+    domApiKey.saveBtn.disabled = false;
+    domApiKey.saveBtn.textContent = '💾 保存并启用';
+  }
+}
+
+// Event listeners for API key modal
+if (domApiKey.toggleView) {
+  domApiKey.toggleView.addEventListener('click', () => {
+    if (!domApiKey.input) return;
+    const isPassword = domApiKey.input.type === 'password';
+    domApiKey.input.type = isPassword ? 'text' : 'password';
+    domApiKey.toggleView.textContent = isPassword ? '🙈' : '👁️';
+  });
+}
+
+if (domApiKey.saveBtn) domApiKey.saveBtn.addEventListener('click', saveApiKey);
+if (domApiKey.cancelBtn) domApiKey.cancelBtn.addEventListener('click', closeApiKeyModal);
+if (domApiKey.closeBtn) domApiKey.closeBtn.addEventListener('click', closeApiKeyModal);
+if (domApiKey.overlay) {
+  domApiKey.overlay.addEventListener('click', (e) => {
+    if (e.target === domApiKey.overlay) closeApiKeyModal();
+  });
+}
+
+// Keyboard: Enter to save, Escape to close
+document.addEventListener('keydown', (e) => {
+  if (domApiKey.overlay && !domApiKey.overlay.classList.contains('hidden')) {
+    if (e.key === 'Escape') { e.preventDefault(); closeApiKeyModal(); }
+    if (e.key === 'Enter') { e.preventDefault(); saveApiKey(); }
+  }
+});
 
 // ===========================================================================
 // Initialize

@@ -24,7 +24,7 @@ const PORT = process.env.PORT || 3000;
 const ASR_BASE_URL = process.env.ASR_BASE_URL || 'wss://rtasr.xfyun.cn/v1/asr/ws';
 const APP_ID = process.env.TRANSLATE_APP_ID || '';
 const APP_SECRET = process.env.TRANSLATE_APP_SECRET || '';
-const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY || '';
+const DEEPSEEK_API_KEY = process.env.DEEPSEEK_API_KEY || '';
 
 // Audio constants
 const SAMPLE_RATE = 16000;
@@ -158,6 +158,83 @@ async function translateText(text, sourceLang, targetLang) {
 }
 
 // ---------------------------------------------------------------------------
+// DeepSeek API — AI-powered features (context-aware, polish, correct, summary)
+// ---------------------------------------------------------------------------
+function getDeepSeekKey() {
+  return process.env.DEEPSEEK_API_KEY || '';
+}
+
+async function callDeepSeek(messages, options = {}) {
+  const apiKey = getDeepSeekKey();
+  if (!apiKey) return null;
+  try {
+    const resp = await fetch('https://api.deepseek.com/v1/chat/completions', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${apiKey}`,
+      },
+      body: JSON.stringify({
+        model: options.model || 'deepseek-chat',
+        messages,
+        temperature: options.temperature ?? 0.3,
+        max_tokens: options.maxTokens || 1024,
+      }),
+      signal: AbortSignal.timeout(options.timeout || 15000),
+    });
+    if (!resp.ok) { console.error('[DeepSeek] API error:', resp.status); return null; }
+    const data = await resp.json();
+    return data.choices?.[0]?.message?.content?.trim() || null;
+  } catch (err) {
+    console.error('[DeepSeek] Request failed:', err.message);
+    return null;
+  }
+}
+
+// Context-aware translation: uses previous sentences to improve coherence
+async function translateWithContext(text, sourceLang, targetLang, contextSentences) {
+  const contextStr = contextSentences.length > 0
+    ? contextSentences.map((s, i) => `[${i + 1}] 原文: ${s.asr}\n    译文: ${s.translate}`).join('\n')
+    : '(无上下文)';
+  const messages = [
+    { role: 'system', content: `你是一个专业同声传译引擎。根据对话上下文提供准确、连贯的翻译。保持术语一致性，正确处理代词指代。将${sourceLang === 'auto' ? '任意语言' : sourceLang}翻译为${targetLang}。只输出译文，不要解释。` },
+    { role: 'user', content: `对话上下文：\n${contextStr}\n\n请翻译：${text}` },
+  ];
+  return callDeepSeek(messages, { temperature: 0.1, maxTokens: 512 });
+}
+
+// Polish Google Translate output for more natural results
+async function polishTranslation(text, sourceLang, targetLang) {
+  const messages = [
+    { role: 'system', content: `你是一个翻译润色引擎。对机翻结果进行润色使其更自然流畅，符合${targetLang}表达习惯。保持原意不变。只输出润色后的译文，不要解释。` },
+    { role: 'user', content: `原文: ${text}\n请润色使译文更自然。` },
+  ];
+  return callDeepSeek(messages, { temperature: 0.2, maxTokens: 512 });
+}
+
+// Smart ASR correction using context
+async function correctASR(text, contextSentences) {
+  const contextStr = contextSentences.map((s, i) => `[${i}] ${s.asr}`).join('\n');
+  const messages = [
+    { role: 'system', content: '你是语音识别纠错引擎。根据对话上下文检测并纠正识别错误（发音相近的词、数字、专有名词等）。如果文本正确则原样返回。只输出纠正后的文本，不要解释。' },
+    { role: 'user', content: `上下文：\n${contextStr}\n\n待纠正：${text}` },
+  ];
+  return callDeepSeek(messages, { temperature: 0.05, maxTokens: 512 });
+}
+
+// Generate meeting summary
+async function generateSummary(sentences) {
+  const transcript = sentences.map((s, i) =>
+    `[${i + 1}] 原文: ${s.asr}\n    译文: ${s.translate || ''}`
+  ).join('\n\n');
+  const messages = [
+    { role: 'system', content: '你是会议纪要生成引擎。根据转录内容生成结构化会议纪要，包括：1. 会议主题 2. 关键讨论点 3. 结论/决策 4. 待办事项。用中文输出，简洁清晰。如转录内容不足，诚实说明。' },
+    { role: 'user', content: `转录内容：\n\n${transcript}\n\n请生成会议纪要。` },
+  ];
+  return callDeepSeek(messages, { temperature: 0.3, maxTokens: 2048, timeout: 30000 });
+}
+
+// ---------------------------------------------------------------------------
 // Express + HTTP server
 // ---------------------------------------------------------------------------
 const app = express();
@@ -286,6 +363,96 @@ app.post('/api/refine', async (req, res) => {
   if (!hist) return res.status(404).json({ error: 'session not found' });
   const better = await translateText(asr, 'auto', 'zh-CN');
   res.json({ seg_id: segId, refinement: better ? { needs_correction: true, corrected_translation: better } : null });
+});
+
+// --- AI endpoints (DeepSeek powered) ---
+
+// Context-aware translation
+app.post('/api/ai/translate-context', async (req, res) => {
+  if (!getDeepSeekKey()) return res.status(503).json({ error: 'DeepSeek API not configured' });
+  const { text, sourceLang, targetLang, sessionId } = req.body;
+  if (!text || !text.trim()) return res.status(400).json({ error: 'missing text' });
+  const hist = sessionId ? sessions.get(sessionId) : null;
+  const context = hist ? hist.getContext(5) : [];
+  const result = await translateWithContext(text, sourceLang || 'auto', targetLang || 'zh-CN', context);
+  res.json({ translation: result, ai_model: 'deepseek' });
+});
+
+// Polish translation
+app.post('/api/ai/polish', async (req, res) => {
+  if (!getDeepSeekKey()) return res.status(503).json({ error: 'DeepSeek API not configured' });
+  const { text, targetLang } = req.body;
+  if (!text || !text.trim()) return res.status(400).json({ error: 'missing text' });
+  const result = await polishTranslation(text, 'auto', targetLang || 'zh-CN');
+  res.json({ polished: result, ai_model: 'deepseek' });
+});
+
+// Smart ASR correction
+app.post('/api/ai/correct', async (req, res) => {
+  if (!getDeepSeekKey()) return res.status(503).json({ error: 'DeepSeek API not configured' });
+  const { text, sessionId } = req.body;
+  if (!text || !text.trim()) return res.status(400).json({ error: 'missing text' });
+  const hist = sessionId ? sessions.get(sessionId) : null;
+  const context = hist ? hist.getContext(5).map(s => ({ asr: s.asr })) : [];
+  const result = await correctASR(text, context);
+  res.json({ corrected: result, ai_model: 'deepseek' });
+});
+
+// Meeting summary
+app.post('/api/ai/summary', async (req, res) => {
+  if (!getDeepSeekKey()) return res.status(503).json({ error: 'DeepSeek API not configured' });
+  const { sessionId } = req.body;
+  if (!sessionId) return res.status(400).json({ error: 'missing sessionId' });
+  const hist = sessions.get(sessionId);
+  if (!hist) return res.status(404).json({ error: 'session not found' });
+  const sentences = hist.sentences.filter(s => s.is_final && s.asr.trim());
+  if (sentences.length < 2) return res.json({ summary: '转录内容不足，至少需要2句完整对话才能生成纪要。请继续录音。' });
+  const result = await generateSummary(sentences);
+  res.json({ summary: result, sentenceCount: sentences.length, ai_model: 'deepseek' });
+});
+
+// DeepSeek status
+app.get('/api/ai/status', (_req, res) => {
+  res.json({ available: !!getDeepSeekKey(), model: 'deepseek-chat' });
+});
+
+// Save API key to .env (restart required to take effect)
+app.post('/api/ai/config', express.json(), (req, res) => {
+  const { apiKey } = req.body;
+  if (!apiKey || !apiKey.trim()) {
+    return res.status(400).json({ error: 'API key is required' });
+  }
+
+  const fs = require('fs');
+  const envPath = path.join(__dirname, '.env');
+
+  try {
+    let envContent = '';
+    if (fs.existsSync(envPath)) {
+      envContent = fs.readFileSync(envPath, 'utf-8');
+    }
+
+    // Update or add DEEPSEEK_API_KEY
+    if (/^DEEPSEEK_API_KEY=/m.test(envContent)) {
+      envContent = envContent.replace(/^DEEPSEEK_API_KEY=.*$/m, `DEEPSEEK_API_KEY=${apiKey.trim()}`);
+    } else {
+      envContent += `\nDEEPSEEK_API_KEY=${apiKey.trim()}\n`;
+    }
+
+    fs.writeFileSync(envPath, envContent, 'utf-8');
+
+    // Update in-memory for current session
+    process.env.DEEPSEEK_API_KEY = apiKey.trim();
+    // Re-bind the module-level variable
+    const updatedKey = apiKey.trim();
+    // Update the const via module-level reassignment isn't possible in JS,
+    // but we can update process.env which callDeepSeek reads from.
+
+    res.json({ success: true, message: 'API key saved. Restart server for persistent changes.' });
+  } catch (err) {
+    console.error('[Config] Failed to write .env:', err.message);
+    res.status(500).json({ error: 'Failed to save API key: ' + err.message });
+  }
 });
 
 const server = http.createServer(app);
@@ -423,6 +590,20 @@ wss.on('connection', (browserWs) => {
                     translate: trans,
                     sessionId: sessionId,
                   }));
+                  if (getDeepSeekKey()) {
+                    polishTranslation(trans, config.lang, config.targetLang).then(polished => {
+                      if (polished && polished !== trans) {
+                        history.upsert(segId, asr, polished, true);
+                        browserWs.send(JSON.stringify({
+                          type: 'translation_polished',
+                          seg_id: segId,
+                          translate: polished,
+                          original_translate: trans,
+                          sessionId: sessionId,
+                        }));
+                      }
+                    }).catch(() => {});
+                  }
                 }
               });
             }
@@ -441,7 +622,8 @@ wss.on('connection', (browserWs) => {
 
     asrWs.on('error', (err) => {
       console.error('[iFlytek] WebSocket error:', err.message);
-      browserWs.send(JSON.stringify({ type: 'error', code: 'asr_ws_error', desc: err.message }));
+      // Don't send error to browser — file uploads use browser SpeechRecognition
+      // Only log server-side; avoids confusing "404" messages for users
     });
 
     asrWs.on('close', (code) => {
@@ -449,15 +631,15 @@ wss.on('connection', (browserWs) => {
       asrReady = false;
       asrReconnectAttempts++;
       if (asrReconnectAttempts <= 3) {
-        browserWs.send(JSON.stringify({ type: 'status', code: 'asr_disconnected' }));
         setTimeout(() => {
           if (browserWs.readyState === WebSocket.OPEN) connectToASR();
-        }, 3000);
+        }, 5000);
       } else {
         console.log('[iFlytek] Max reconnect attempts reached — giving up');
+        // Notify browser once, gently
         browserWs.send(JSON.stringify({
-          type: 'error', code: 'asr_unavailable',
-          desc: '讯飞ASR不可用 — 请使用麦克风模式（Chrome/Edge浏览器语音识别）',
+          type: 'status', code: 'asr_unavailable',
+          desc: '讯飞ASR暂不可用，文件上传请使用浏览器语音识别模式',
         }));
       }
     });
@@ -509,6 +691,21 @@ wss.on('connection', (browserWs) => {
             translate: gtTrans,
             sessionId: sessionId,
           }));
+          // AI polish
+          if (getDeepSeekKey()) {
+            polishTranslation(gtTrans, config.lang, config.targetLang).then(polished => {
+              if (polished && polished !== gtTrans) {
+                history.upsert(segId, asr, polished, true);
+                browserWs.send(JSON.stringify({
+                  type: 'translation_polished',
+                  seg_id: segId,
+                  translate: polished,
+                  original_translate: gtTrans,
+                  sessionId: sessionId,
+                }));
+              }
+            }).catch(() => {});
+          }
         }
       });
     }
@@ -637,7 +834,10 @@ wss.on('connection', (browserWs) => {
         }));
 
         if (isFinal && text.trim() && config.translateEnabled) {
-          translateText(text, config.lang, config.targetLang).then(trans => {
+          // Use conversation-specific target language if provided
+          const targetLang = msg.target_lang || config.targetLang;
+          const sourceLang = msg.source_lang || config.lang;
+          translateText(text, sourceLang, targetLang).then(trans => {
             if (trans) {
               history.upsert(segId, text, trans, true);
               browserWs.send(JSON.stringify({
@@ -646,6 +846,21 @@ wss.on('connection', (browserWs) => {
                 translate: trans,
                 sessionId: sessionId,
               }));
+              // AI polish: async, non-blocking
+              if (getDeepSeekKey()) {
+                polishTranslation(trans, sourceLang, targetLang).then(polished => {
+                  if (polished && polished !== trans) {
+                    history.upsert(segId, text, polished, true);
+                    browserWs.send(JSON.stringify({
+                      type: 'translation_polished',
+                      seg_id: segId,
+                      translate: polished,
+                      original_translate: trans,
+                      sessionId: sessionId,
+                    }));
+                  }
+                }).catch(() => {});
+              }
             }
           });
         }
@@ -697,10 +912,12 @@ wss.on('connection', (browserWs) => {
 // ---------------------------------------------------------------------------
 server.listen(PORT, () => {
   const hasCreds = APP_ID && APP_ID !== 'your_app_id';
+  const hasAI = !!getDeepSeekKey();
   console.log(`\n🎙️  AI Simultaneous Interpretation Assistant`);
   console.log(`   Server:      http://localhost:${PORT}`);
   console.log(`   WebSocket:   ws://localhost:${PORT}/ws`);
   console.log(`   ASR:         ✓ Browser Web Speech API (Chrome/Edge, free)`);
   console.log(`   ASR Fallback:${hasCreds ? ' iFlytek rtasr (file upload)' : ' ✗ not configured'}`);
-  console.log(`   Translation: ✓ MyMemory (free) + Google Translate fallback\n`);
+  console.log(`   Translation: ✓ MyMemory (free) + Google Translate fallback`);
+  console.log(`   AI Features: ${hasAI ? '✓ DeepSeek (context, polish, correct, summary)' : '✗ not configured — set DEEPSEEK_API_KEY in .env'}\n`);
 });
